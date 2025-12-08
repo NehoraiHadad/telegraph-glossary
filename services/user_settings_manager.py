@@ -19,10 +19,16 @@ DEFAULT_USER_SETTINGS = {
 
 # Query param keys (short to keep URLs clean)
 PARAM_KEYS = {
+    # User settings
     "chat_id": "cid",
     "marking_syntax": "syn",
     "custom_prefix": "cpre",
     "custom_suffix": "csuf",
+    # Telegraph settings (per-user)
+    "access_token": "tok",
+    "short_name": "sn",
+    "author_name": "an",
+    "index_page_path": "idx",
 }
 
 
@@ -151,10 +157,11 @@ class UserSettingsManager:
         for backward compatibility.
 
         Returns:
-            Dict with telegram_bot and settings sections
+            Dict with telegraph, telegram_bot and settings sections
         """
         prefix, suffix = cls.get_custom_syntax()
         return {
+            "telegraph": cls.get_telegraph_settings(),
             "telegram_bot": {
                 "chat_id": cls.get_chat_id(),
             },
@@ -182,3 +189,100 @@ class UserSettingsManager:
         for key in keys_to_clear:
             if key in st.session_state:
                 del st.session_state[key]
+
+    # ========== Telegraph Settings (per-user) ==========
+
+    @classmethod
+    def get_access_token(cls) -> str:
+        """Get the user's Telegraph access token from URL.
+
+        Returns:
+            The access token or empty string if not set
+        """
+        return cls._get_param("access_token")
+
+    @classmethod
+    def set_access_token(cls, token: str) -> None:
+        """Set the user's Telegraph access token in URL.
+
+        Args:
+            token: The Telegraph API access token
+        """
+        cls._set_param("access_token", token)
+
+    @classmethod
+    def get_short_name(cls) -> str:
+        """Get the user's Telegraph account short name.
+
+        Returns:
+            The short name or empty string if not set
+        """
+        return cls._get_param("short_name")
+
+    @classmethod
+    def set_short_name(cls, name: str) -> None:
+        """Set the user's Telegraph account short name.
+
+        Args:
+            name: The short name for the account
+        """
+        cls._set_param("short_name", name)
+
+    @classmethod
+    def get_author_name(cls) -> str:
+        """Get the user's Telegraph author name.
+
+        Returns:
+            The author name or empty string if not set
+        """
+        return cls._get_param("author_name")
+
+    @classmethod
+    def set_author_name(cls, name: str) -> None:
+        """Set the user's Telegraph author name.
+
+        Args:
+            name: The author name to display on pages
+        """
+        cls._set_param("author_name", name)
+
+    @classmethod
+    def get_index_page_path(cls) -> str:
+        """Get the user's Telegraph index page path.
+
+        Returns:
+            The index page path or empty string if not set
+        """
+        return cls._get_param("index_page_path")
+
+    @classmethod
+    def set_index_page_path(cls, path: str) -> None:
+        """Set the user's Telegraph index page path.
+
+        Args:
+            path: The path to the glossary index page
+        """
+        cls._set_param("index_page_path", path)
+
+    @classmethod
+    def is_telegraph_configured(cls) -> bool:
+        """Check if Telegraph is configured (token exists in URL).
+
+        Returns:
+            True if access token is present in URL
+        """
+        return bool(cls.get_access_token())
+
+    @classmethod
+    def get_telegraph_settings(cls) -> dict:
+        """Get all Telegraph settings from URL.
+
+        Returns:
+            Dict with access_token, short_name, author_name, index_page_path
+        """
+        return {
+            "access_token": cls.get_access_token(),
+            "short_name": cls.get_short_name(),
+            "author_name": cls.get_author_name(),
+            "index_page_path": cls.get_index_page_path(),
+        }

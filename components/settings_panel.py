@@ -99,9 +99,6 @@ def _render_telegram_bot_settings() -> None:
     The bot is already set up - just add it to your channel and enter your Chat ID.
     """)
 
-    # Bookmark info with copy URL button
-    _render_bookmark_helper()
-
     # Instructions expander
     with st.expander("How to find your Chat ID", expanded=False):
         st.markdown(f"""
@@ -156,17 +153,22 @@ def _render_bookmark_helper() -> None:
     """Render bookmark helper with copy URL button."""
     import streamlit.components.v1 as components
 
-    chat_id = UserSettingsManager.get_chat_id()
+    access_token = UserSettingsManager.get_access_token()
 
-    if chat_id:
-        # User has settings - show how to save them
-        st.info("Your settings are saved in the URL. **Bookmark this page** or copy the URL below!")
+    if access_token:
+        # User has glossary - critical warning about URL
+        st.warning("""
+        **Important!** Your URL contains your glossary access token.
+        **If you lose the URL, you lose access to your glossary!**
+        """)
 
-        col1, col2 = st.columns([3, 1])
+        st.info("**Save this URL** - it contains all your settings and glossary access.")
+
+        col1, col2 = st.columns([2, 1])
         with col1:
-            st.caption("Press **Ctrl+D** (Windows/Linux) or **Cmd+D** (Mac) to bookmark")
+            st.caption("**Ctrl+D** (Windows/Linux) or **Cmd+D** (Mac) to bookmark")
         with col2:
-            if st.button("Copy URL", key="copy_settings_url", use_container_width=True):
+            if st.button("Copy URL", key="copy_settings_url", type="primary", use_container_width=True):
                 # JavaScript to copy current URL to clipboard
                 components.html(
                     """
@@ -176,10 +178,10 @@ def _render_bookmark_helper() -> None:
                     """,
                     height=0
                 )
-                st.toast("URL copied! Paste it somewhere safe.")
+                st.toast("URL copied! Save it somewhere safe.")
     else:
-        # No settings yet
-        st.info("Enter your Chat ID below. Your settings will be saved in the URL - bookmark to keep them!")
+        # No glossary yet
+        st.info("Create a Telegraph account to start. Your settings will be saved in the URL.")
 
 
 def _save_telegram_chat_id(chat_id: str) -> None:
@@ -194,6 +196,11 @@ def _save_telegram_chat_id(chat_id: str) -> None:
 
 
 def _render_account_settings() -> None:
+    # Show bookmark helper prominently here
+    _render_bookmark_helper()
+
+    st.markdown("---")
+
     config = st.session_state.get("config", {})
     telegraph_config = config.get("telegraph", {})
     col1, col2 = st.columns(2)

@@ -2,7 +2,6 @@
 
 import streamlit as st
 
-from services.config_manager import ConfigManager
 from services.user_settings_manager import UserSettingsManager
 from services.telegraph_service import TelegraphService
 from components.glossary_manager import render_glossary_manager
@@ -34,26 +33,17 @@ def init_session_state() -> None:
 
 def load_app() -> None:
     """Load configuration and initialize services."""
-    config_manager = ConfigManager()
-    admin_config = config_manager.load()
-
-    # Get user settings from URL params
+    # Get all settings from URL params (Telegraph token is now per-user)
     user_settings = UserSettingsManager.get_all_user_settings()
+    st.session_state.config = user_settings
 
-    # Merge admin config with user settings for backward compatibility
-    config = {
-        **admin_config,
-        **user_settings,
-    }
-    st.session_state.config = config
-
-    if config_manager.is_configured():
-        access_token = admin_config["telegraph"]["access_token"]
+    if UserSettingsManager.is_telegraph_configured():
+        access_token = UserSettingsManager.get_access_token()
         telegraph = TelegraphService(access_token)
         st.session_state.telegraph = telegraph
 
         # Load glossary from Telegraph
-        index_path = admin_config["telegraph"].get("index_page_path")
+        index_path = UserSettingsManager.get_index_page_path()
         if index_path:
             try:
                 glossary = telegraph.load_glossary_from_index(index_path)
@@ -153,48 +143,21 @@ def _sync_glossary() -> None:
 
 
 def render_setup_wizard() -> None:
-    """Render first-time setup wizard (local development only)."""
+    """Render first-time setup wizard for new users."""
     st.title("Welcome to Telegraph Glossary")
 
-    config_manager = ConfigManager()
-    if config_manager.is_cloud_mode():
-        # Cloud mode - show instructions to configure secrets
-        st.markdown("""
-        ## Setup Required
-
-        This application requires Telegraph credentials to be configured.
-
-        **For Streamlit Cloud deployment:**
-
-        1. Go to your app's **Settings** > **Secrets**
-        2. Add the following configuration:
-
-        ```toml
-        [telegraph]
-        access_token = "your-telegraph-access-token"
-        short_name = "YourGlossaryName"
-        author_name = "Your Name"
-        index_page_path = "your-index-page-path"
-
-        [telegram]
-        bot_token = "your-telegram-bot-token"
-        ```
-
-        3. To get Telegraph credentials, create an account at [telegra.ph](https://telegra.ph)
-           or run this app locally first to generate them automatically.
-
-        4. Redeploy or refresh the app after adding secrets.
-        """)
-        return
-
-    # Local mode - show setup form
     st.markdown(
         "Create and manage your personal glossary with Telegraph integration. "
-        "Let's set up your account!"
+        "Each user gets their own glossary - let's set up yours!"
     )
 
+    st.warning("""
+    **Important:** Your glossary access token will be saved in the URL.
+    **You must bookmark/save the URL** after creating your account to keep access to your glossary!
+    """)
+
     with st.form("setup_form"):
-        st.subheader("Create Telegraph Account")
+        st.subheader("Create Your Telegraph Account")
 
         short_name = st.text_input(
             "Account Name",
@@ -219,26 +182,25 @@ def render_setup_wizard() -> None:
 
 
 def _setup_account(short_name: str, author_name: str) -> None:
-    """Set up new Telegraph account (local development only)."""
+    """Set up new Telegraph account and save credentials to URL."""
     try:
         with st.spinner("Setting up your account..."):
             telegraph = TelegraphService()
             account = telegraph.create_account(short_name, author_name)
             index_result = telegraph.create_index_page({})
 
-            config_manager = ConfigManager()
-            config_manager.load()
-            config_manager.set("telegraph.access_token", account["access_token"])
-            config_manager.set("telegraph.short_name", short_name)
-            config_manager.set("telegraph.author_name", author_name)
-            config_manager.set("telegraph.index_page_path", index_result["path"])
+            # Save to URL params instead of config.json
+            UserSettingsManager.set_access_token(account["access_token"])
+            UserSettingsManager.set_short_name(short_name)
+            UserSettingsManager.set_author_name(author_name)
+            UserSettingsManager.set_index_page_path(index_result["path"])
 
             st.session_state.telegraph = telegraph
-            st.session_state.config = config_manager.get_config()
+            st.session_state.config = UserSettingsManager.get_all_user_settings()
             st.session_state.glossary = {}
             st.session_state.initialized = True
 
-            st.success("Account created successfully!")
+            st.success("Account created! **Save the URL to keep your glossary!**")
             st.balloons()
             st.rerun()
 
@@ -254,10 +216,8 @@ def main() -> None:
     if not st.session_state.initialized:
         load_app()
 
-    config_manager = ConfigManager()
-    config_manager.load()
-
-    if not config_manager.is_configured():
+    # Check URL params for Telegraph token
+    if not UserSettingsManager.is_telegraph_configured():
         render_setup_wizard()
         return
 
