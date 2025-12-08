@@ -16,9 +16,17 @@ import streamlit as st
 from typing import Optional, List, Dict, Any
 import logging
 
-from services.mcp_client import TelegraphMCPClient
 from services.ai_providers import ClaudeProvider, OpenAIProvider, GeminiProvider
 from services.user_settings_manager import UserSettingsManager
+
+# Try MCP client first, fall back to direct tools (for Streamlit Cloud)
+try:
+    from services.mcp_client import TelegraphMCPClient
+    MCP_AVAILABLE = True
+except ImportError:
+    MCP_AVAILABLE = False
+
+from services.direct_telegraph_tools import DirectTelegraphTools
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -200,11 +208,37 @@ def _handle_chat_input() -> None:
         })
 
 
+def _get_tools_client(telegraph_token: str):
+    """
+    Get the appropriate tools client.
+
+    Tries MCP client first, falls back to DirectTelegraphTools if MCP fails.
+    DirectTelegraphTools is a pure Python implementation that doesn't need Node.js.
+    """
+    # Try MCP client first (if available and npx exists)
+    if MCP_AVAILABLE:
+        try:
+            from services.mcp_client import TelegraphMCPClient
+            client = TelegraphMCPClient(telegraph_token)
+            # Test if it can connect (will fail fast if npx not found)
+            tools = client.get_tools_sync()
+            logger.info(f"Using MCP client, found {len(tools)} tools")
+            return client, tools, "MCP"
+        except Exception as e:
+            logger.warning(f"MCP client failed: {e}, falling back to direct tools")
+
+    # Fallback to direct Python implementation (no Node.js needed)
+    client = DirectTelegraphTools(telegraph_token)
+    tools = client.get_tools_sync()
+    logger.info(f"Using direct tools (no MCP), found {len(tools)} tools")
+    return client, tools, "Direct"
+
+
 def _get_ai_response() -> str:
-    """Get response from AI provider with MCP tool support.
+    """Get response from AI provider with tool support.
 
     This is the core function that:
-    1. Initializes MCP client and fetches available tools
+    1. Initializes tools client (MCP or direct fallback)
     2. Initializes the selected AI provider
     3. Builds conversation messages with system prompt
     4. Sends request to AI with tools available
@@ -218,13 +252,11 @@ def _get_ai_response() -> str:
     try:
         telegraph_token = UserSettingsManager.get_access_token()
 
-        # Initialize MCP client and get tools
-        mcp_client = TelegraphMCPClient(telegraph_token)
-
-        with st.status("Connecting to Telegraph MCP...", expanded=False) as status:
-            tools = mcp_client.get_tools_sync()
-            status.update(label=f"Found {len(tools)} tools", state="complete")
-            logger.info(f"Retrieved {len(tools)} MCP tools")
+        # Initialize tools client (MCP or direct fallback)
+        with st.status("Connecting to Telegraph...", expanded=False) as status:
+            tools_client, tools, client_type = _get_tools_client(telegraph_token)
+            status.update(label=f"Found {len(tools)} tools ({client_type})", state="complete")
+            logger.info(f"Retrieved {len(tools)} tools via {client_type}")
 
         # Initialize AI provider
         provider = _get_provider()
@@ -264,7 +296,7 @@ def _get_ai_response() -> str:
 
         if tool_calls:
             logger.info(f"AI requested {len(tool_calls)} tool calls")
-            return _handle_tool_calls(tool_calls, mcp_client, provider, messages, tools, system_prompt)
+            return _handle_tool_calls(tool_calls, tools_client, provider, messages, tools, system_prompt)
 
         # Extract text response
         return _extract_text_response(response)

@@ -153,7 +153,7 @@ def _render_native_upload(key: str, state_key_content: str, api_key: str) -> Non
             st.image(uploaded_file, caption="Preview", use_container_width=True)
 
             if st.button("Upload & Insert", key=f"{key}_upload_btn", type="primary"):
-                _handle_imgbb_upload(uploaded_file, api_key, state_key_content)
+                _handle_imgbb_upload(uploaded_file, api_key, state_key_content, key)
 
     with tab_url:
         _render_url_input(key, state_key_content)
@@ -193,7 +193,7 @@ def _render_url_input(key: str, state_key_content: str) -> None:
         if st.button("Insert", key=f"{key}_insert_url_btn", type="primary", use_container_width=True):
             if image_url:
                 if _is_valid_image_url(image_url):
-                    _insert_image(image_url, state_key_content)
+                    _insert_image(image_url, state_key_content, key)
                 else:
                     st.error("Invalid URL format")
             else:
@@ -202,7 +202,7 @@ def _render_url_input(key: str, state_key_content: str) -> None:
     st.caption("Tip: `![description](image_url)` in the editor also works")
 
 
-def _handle_imgbb_upload(uploaded_file, api_key: str, state_key_content: str) -> None:
+def _handle_imgbb_upload(uploaded_file, api_key: str, state_key_content: str, editor_key: str) -> None:
     """Handle image upload to imgbb."""
 
     try:
@@ -212,7 +212,7 @@ def _handle_imgbb_upload(uploaded_file, api_key: str, state_key_content: str) ->
             service = ImgbbService(api_key)
             image_url = service.upload_from_streamlit(uploaded_file)
 
-        _insert_image(image_url, state_key_content)
+        _insert_image(image_url, state_key_content, editor_key)
 
     except ImgbbUploadError as e:
         st.error(f"Upload failed: {str(e)}")
@@ -220,11 +220,22 @@ def _handle_imgbb_upload(uploaded_file, api_key: str, state_key_content: str) ->
         st.error(f"Error: {str(e)}")
 
 
-def _insert_image(image_url: str, state_key_content: str) -> None:
+def _insert_image(image_url: str, state_key_content: str, editor_key: str = None) -> None:
     """Insert an image markdown into the editor content."""
     markdown_img = f"\n![image]({image_url})\n"
     current_content = st.session_state.get(state_key_content, "")
-    st.session_state[state_key_content] = current_content + markdown_img
+    new_content = current_content + markdown_img
+    st.session_state[state_key_content] = new_content
+
+    # Also update the text_area widget keys to sync
+    if editor_key:
+        textarea_key = f"{editor_key}_markdown_textarea"
+        textarea_full_key = f"{editor_key}_markdown_textarea_full"
+        if textarea_key in st.session_state:
+            st.session_state[textarea_key] = new_content
+        if textarea_full_key in st.session_state:
+            st.session_state[textarea_full_key] = new_content
+
     st.success("Image inserted!")
     st.rerun()
 
