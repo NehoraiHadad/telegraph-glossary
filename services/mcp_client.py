@@ -265,18 +265,7 @@ class TelegraphMCPClient:
             tools = client.get_tools_sync()
             ```
         """
-        try:
-            return asyncio.run(self.get_tools())
-        except RuntimeError as e:
-            # Handle "Event loop is already running" error
-            # This can occur in some async contexts
-            logger.warning(f"asyncio.run() failed, trying get_event_loop(): {e}")
-            try:
-                loop = asyncio.get_event_loop()
-                return loop.run_until_complete(self.get_tools())
-            except Exception as inner_e:
-                logger.error(f"Both asyncio approaches failed: {inner_e}")
-                raise
+        return self._run_async(self.get_tools())
 
     def call_tool_sync(
         self,
@@ -304,16 +293,40 @@ class TelegraphMCPClient:
             result = client.call_tool_sync("get_page_list", {"limit": 10})
             ```
         """
+        return self._run_async(self.call_tool(name, arguments))
+
+    def _run_async(self, coro) -> Any:
+        """
+        Run an async coroutine synchronously.
+
+        Handles the complexities of running async code in Streamlit's
+        thread environment where there may not be a current event loop.
+
+        Args:
+            coro: The coroutine to run
+
+        Returns:
+            The result of the coroutine
+        """
         try:
-            return asyncio.run(self.call_tool(name, arguments))
+            # Try asyncio.run() first (works in most cases)
+            return asyncio.run(coro)
         except RuntimeError as e:
-            # Handle "Event loop is already running" error
-            logger.warning(f"asyncio.run() failed, trying get_event_loop(): {e}")
-            try:
-                loop = asyncio.get_event_loop()
-                return loop.run_until_complete(self.call_tool(name, arguments))
-            except Exception as inner_e:
-                logger.error(f"Both asyncio approaches failed: {inner_e}")
+            if "no current event loop" in str(e).lower() or "no running event loop" in str(e).lower():
+                # Create a new event loop for this thread
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+                try:
+                    return loop.run_until_complete(coro)
+                finally:
+                    loop.close()
+                    asyncio.set_event_loop(None)
+            elif "already running" in str(e).lower():
+                # Event loop is already running (e.g., Jupyter)
+                import nest_asyncio
+                nest_asyncio.apply()
+                return asyncio.run(coro)
+            else:
                 raise
 
     def clear_cache(self) -> None:
