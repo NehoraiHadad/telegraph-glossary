@@ -311,29 +311,11 @@ def _handle_image_insertion(
     """Handle the image upload and insertion into the editor."""
     try:
         with st.spinner("Uploading image to Telegraph..."):
-            # Save uploaded file temporarily
-            import tempfile
-            import os
+            # Use ImageUploadService for reliable uploads
+            from services.image_upload_service import ImageUploadService, ImageUploadError
 
-            with tempfile.NamedTemporaryFile(delete=False, suffix=os.path.splitext(uploaded_file.name)[1]) as tmp_file:
-                tmp_file.write(uploaded_file.getvalue())
-                tmp_path = tmp_file.name
-
-            # Upload to Telegraph
-            if telegraph_service and hasattr(telegraph_service, 'upload_image'):
-                image_url = telegraph_service.upload_image(tmp_path)
-            else:
-                # Fallback: Use ImageUploadService if available
-                try:
-                    from services.image_upload_service import ImageUploadService
-                    upload_service = ImageUploadService()
-                    image_url = upload_service.upload_image(uploaded_file.getvalue(), uploaded_file.name)
-                except ImportError:
-                    st.error("Image upload service not available. Please configure Telegraph service.")
-                    return
-
-            # Clean up temp file
-            os.unlink(tmp_path)
+            upload_service = ImageUploadService()
+            image_url = upload_service.upload_from_streamlit(uploaded_file)
 
         # Insert into the appropriate editor
         current_mode = st.session_state[state_key_mode]
@@ -352,8 +334,10 @@ def _handle_image_insertion(
 
         st.rerun()
 
+    except ImageUploadError as e:
+        st.error(f"Image upload failed: {str(e)}")
     except Exception as e:
-        st.error(f"Failed to upload image: {str(e)}")
+        st.error(f"Unexpected error: {str(e)}")
 
 
 # RTL Support CSS

@@ -102,8 +102,9 @@ class TelegraphService:
         Returns:
             The full Telegraph URL of the uploaded image
         """
-        result = self.client.upload_file(file_path)
-        return f"https://telegra.ph{result[0]['src']}"
+        from services.image_upload_service import ImageUploadService
+        upload_service = ImageUploadService()
+        return upload_service.upload_from_file_path(file_path)
 
     def get_page_content(self, path: str) -> Optional[str]:
         """Get the HTML content of an existing page.
