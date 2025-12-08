@@ -95,17 +95,19 @@ class TelegraphService:
         return {"path": result["path"], "url": f"https://telegra.ph/{result['path']}"}
 
     def upload_image(self, file_path: str) -> str:
-        """Upload image to Telegraph and return URL.
+        """DEPRECATED: Upload image to Telegraph.
 
-        Args:
-            file_path: Path to the image file to upload
+        Telegraph has disabled direct image uploads.
+        Use external image hosting (imgbb.com, imgur.com) instead.
 
-        Returns:
-            The full Telegraph URL of the uploaded image
+        Raises:
+            NotImplementedError: Always raises - direct upload not supported
         """
-        from services.image_upload_service import ImageUploadService
-        upload_service = ImageUploadService()
-        return upload_service.upload_from_file_path(file_path)
+        raise NotImplementedError(
+            "Telegraph has disabled direct image uploads. "
+            "Please upload images to imgbb.com, imgur.com, or another "
+            "image hosting service and use the URL in your content."
+        )
 
     def get_page_content(self, path: str) -> Optional[str]:
         """Get the HTML content of an existing page.

@@ -1,11 +1,14 @@
-"""Content converter service for Markdown/HTML conversion."""
+"""Content converter service for Markdown to Telegraph HTML conversion.
+
+This module handles the one-way conversion from Markdown to Telegraph-compatible HTML.
+Telegraph only supports a limited set of HTML tags.
+"""
 
 import re
 from typing import Optional
 
 import bleach
 import markdown
-from markdown.extensions import fenced_code, tables
 
 
 # Telegraph supported HTML tags
@@ -24,7 +27,7 @@ TELEGRAPH_ALLOWED_ATTRIBUTES = {
 
 
 class ContentConverter:
-    """Convert between Markdown, HTML, and sanitize for Telegraph."""
+    """Convert Markdown to Telegraph-compatible HTML."""
 
     @staticmethod
     def markdown_to_html(markdown_text: str) -> str:
@@ -63,16 +66,15 @@ class ContentConverter:
     @staticmethod
     def _post_process_html(html: str) -> str:
         """Post-process HTML for Telegraph compatibility."""
-        # Convert <strong> to <b>
+        # Convert <strong> to <b> (Telegraph prefers <b>)
         html = re.sub(r'<strong>(.*?)</strong>', r'<b>\1</b>', html, flags=re.DOTALL)
 
-        # Convert <em> to <i>
+        # Convert <em> to <i> (Telegraph prefers <i>)
         html = re.sub(r'<em>(.*?)</em>', r'<i>\1</i>', html, flags=re.DOTALL)
 
-        # Ensure images are wrapped in <figure>
+        # Ensure images are wrapped in <figure> (required by Telegraph)
         def wrap_img_in_figure(match):
             img_tag = match.group(0)
-            # Check if already inside a figure
             return f'<figure>{img_tag}</figure>'
 
         # Only wrap standalone images (not already in figure)
@@ -88,6 +90,9 @@ class ContentConverter:
     def html_to_markdown(html_content: str) -> str:
         """
         Convert HTML back to Markdown (best effort).
+
+        This is used for editing existing HTML content in the markdown editor.
+        Note: This conversion is not perfect - some formatting may be lost.
 
         Args:
             html_content: HTML string
@@ -122,10 +127,16 @@ class ContentConverter:
         text = re.sub(r'<a href="([^"]*)"[^>]*>(.*?)</a>', r'[\2](\1)', text, flags=re.DOTALL)
 
         # Images (extract from figure if present)
-        text = re.sub(r'<figure>\s*<img src="([^"]*)"[^>]*/?>\s*(?:<figcaption>(.*?)</figcaption>)?\s*</figure>',
-                      lambda m: f'![{m.group(2) or "image"}]({m.group(1)})', text, flags=re.DOTALL)
-        text = re.sub(r'<img src="([^"]*)"[^>]*/?>',
-                      lambda m: f'![image]({m.group(1)})', text)
+        text = re.sub(
+            r'<figure>\s*<img src="([^"]*)"[^>]*/?>\s*(?:<figcaption>(.*?)</figcaption>)?\s*</figure>',
+            lambda m: f'![{m.group(2) or "image"}]({m.group(1)})',
+            text, flags=re.DOTALL
+        )
+        text = re.sub(
+            r'<img src="([^"]*)"[^>]*/?>',
+            lambda m: f'![image]({m.group(1)})',
+            text
+        )
 
         # Headings
         text = re.sub(r'<h3>(.*?)</h3>', r'### \1', text, flags=re.DOTALL)
@@ -136,9 +147,11 @@ class ContentConverter:
         text = re.sub(r'</?[ou]l>', '', text)
 
         # Blockquotes
-        text = re.sub(r'<blockquote>(.*?)</blockquote>',
-                      lambda m: '\n'.join(f'> {line}' for line in m.group(1).strip().split('\n')),
-                      text, flags=re.DOTALL)
+        text = re.sub(
+            r'<blockquote>(.*?)</blockquote>',
+            lambda m: '\n'.join(f'> {line}' for line in m.group(1).strip().split('\n')),
+            text, flags=re.DOTALL
+        )
 
         # Paragraphs and line breaks
         text = re.sub(r'<br\s*/?>', '\n', text)
@@ -173,33 +186,6 @@ class ContentConverter:
             attributes=TELEGRAPH_ALLOWED_ATTRIBUTES,
             strip=True
         )
-
-    @staticmethod
-    def wrap_definition_content(term: str, content_html: str, escape_term: bool = True) -> str:
-        """
-        Wrap content with term header for Telegraph page.
-
-        Args:
-            term: The glossary term (title)
-            content_html: The HTML content for the definition
-            escape_term: Whether to escape HTML in the term
-
-        Returns:
-            Complete HTML for the Telegraph page
-        """
-        if escape_term:
-            term = ContentConverter._escape_html(term)
-
-        return f"<h3>{term}</h3>\n{content_html}"
-
-    @staticmethod
-    def _escape_html(text: str) -> str:
-        """Escape HTML special characters."""
-        return (text
-                .replace("&", "&amp;")
-                .replace("<", "&lt;")
-                .replace(">", "&gt;")
-                .replace('"', "&quot;"))
 
     @staticmethod
     def extract_plain_text(html: str) -> str:
@@ -248,3 +234,30 @@ class ContentConverter:
         # Check for common HTML tags
         html_pattern = r'<(p|b|i|a|img|ul|ol|li|h[1-6]|code|pre|blockquote|figure)[^>]*>'
         return bool(re.search(html_pattern, content, re.IGNORECASE))
+
+    @staticmethod
+    def wrap_definition_content(term: str, content_html: str, escape_term: bool = True) -> str:
+        """
+        Wrap content with term header for Telegraph page.
+
+        Args:
+            term: The glossary term (title)
+            content_html: The HTML content for the definition
+            escape_term: Whether to escape HTML in the term
+
+        Returns:
+            Complete HTML for the Telegraph page
+        """
+        if escape_term:
+            term = ContentConverter._escape_html(term)
+
+        return f"<h3>{term}</h3>\n{content_html}"
+
+    @staticmethod
+    def _escape_html(text: str) -> str:
+        """Escape HTML special characters."""
+        return (text
+                .replace("&", "&amp;")
+                .replace("<", "&lt;")
+                .replace(">", "&gt;")
+                .replace('"', "&quot;"))

@@ -37,6 +37,11 @@ def load_app() -> None:
     user_settings = UserSettingsManager.get_all_user_settings()
     st.session_state.config = user_settings
 
+    # Load imgbb API key from URL (for image uploads)
+    imgbb_key = UserSettingsManager.get_imgbb_api_key()
+    if imgbb_key:
+        st.session_state.imgbb_api_key = imgbb_key
+
     if UserSettingsManager.is_telegraph_configured():
         access_token = UserSettingsManager.get_access_token()
         telegraph = TelegraphService(access_token)
