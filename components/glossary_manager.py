@@ -141,6 +141,10 @@ def _update_term(old_term: str, new_term: str, new_definition: str, data: Dict[s
         st.session_state.edit_term = None
         show_toast(f"Updated '{new_term}'!")
         st.rerun()
+    except ValueError as e:
+        # Verification failed - Telegraph page was not actually updated
+        st.error(f"Update verification failed: {e}")
+        st.info("Tip: Try deleting this term and creating it again.")
     except Exception as e:
         st.error(f"Failed to update term: {e}")
 
