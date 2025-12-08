@@ -25,10 +25,24 @@ class TelegraphService:
         self.access_token = result.get("access_token")
         return result
 
-    def create_term_page(self, term: str, definition: str, author_name: str = "Telegraph Glossary") -> Dict[str, str]:
-        """Create a Telegraph page for a glossary term."""
-        html_content = f"""<h3>{self._escape_html(term)}</h3>
+    def create_term_page(self, term: str, definition: str, author_name: str = "Telegraph Glossary", is_html: bool = False) -> Dict[str, str]:
+        """Create a Telegraph page for a glossary term.
+
+        Args:
+            term: The glossary term
+            definition: The definition text or HTML content
+            author_name: Author name for the page
+            is_html: If True, definition is treated as pre-formatted HTML.
+                    If False, definition is escaped and wrapped in <p> tags.
+        """
+        if is_html:
+            # Use definition as raw HTML
+            html_content = f"<h3>{self._escape_html(term)}</h3>\n{definition}"
+        else:
+            # Escape definition and wrap in <p> tags (backward compatible)
+            html_content = f"""<h3>{self._escape_html(term)}</h3>
 <p>{self._escape_html(definition)}</p>"""
+
         result = self.client.create_page(
             title=term,
             html_content=html_content,
@@ -36,10 +50,25 @@ class TelegraphService:
         )
         return {"path": result["path"], "url": f"https://telegra.ph/{result['path']}"}
 
-    def update_term_page(self, path: str, term: str, definition: str, author_name: str = "Telegraph Glossary") -> Dict[str, str]:
-        """Update an existing term page."""
-        html_content = f"""<h3>{self._escape_html(term)}</h3>
+    def update_term_page(self, path: str, term: str, definition: str, author_name: str = "Telegraph Glossary", is_html: bool = False) -> Dict[str, str]:
+        """Update an existing term page.
+
+        Args:
+            path: The Telegraph page path
+            term: The glossary term
+            definition: The definition text or HTML content
+            author_name: Author name for the page
+            is_html: If True, definition is treated as pre-formatted HTML.
+                    If False, definition is escaped and wrapped in <p> tags.
+        """
+        if is_html:
+            # Use definition as raw HTML
+            html_content = f"<h3>{self._escape_html(term)}</h3>\n{definition}"
+        else:
+            # Escape definition and wrap in <p> tags (backward compatible)
+            html_content = f"""<h3>{self._escape_html(term)}</h3>
 <p>{self._escape_html(definition)}</p>"""
+
         result = self.client.edit_page(
             path=path,
             title=term,
@@ -63,6 +92,78 @@ class TelegraphService:
                 )
 
         return {"path": result["path"], "url": f"https://telegra.ph/{result['path']}"}
+
+    def upload_image(self, file_path: str) -> str:
+        """Upload image to Telegraph and return URL.
+
+        Args:
+            file_path: Path to the image file to upload
+
+        Returns:
+            The full Telegraph URL of the uploaded image
+        """
+        result = self.client.upload_file(file_path)
+        return f"https://telegra.ph{result[0]['src']}"
+
+    def get_page_content(self, path: str) -> Optional[str]:
+        """Get the HTML content of an existing page.
+
+        Args:
+            path: The Telegraph page path
+
+        Returns:
+            The HTML content of the page, or None if the page doesn't exist
+        """
+        page = self.get_page(path)
+        if not page:
+            return None
+
+        content = page.get("content", [])
+        if isinstance(content, str):
+            return content
+
+        # Convert content nodes to HTML string
+        html_parts = []
+        for node in content:
+            if isinstance(node, str):
+                html_parts.append(node)
+            elif isinstance(node, dict):
+                html_parts.append(self._node_to_html(node))
+
+        return "".join(html_parts)
+
+    def _node_to_html(self, node: Dict[str, Any]) -> str:
+        """Convert a Telegraph content node to HTML string.
+
+        Args:
+            node: A Telegraph content node dictionary
+
+        Returns:
+            HTML string representation of the node
+        """
+        tag = node.get("tag", "")
+        attrs = node.get("attrs", {})
+        children = node.get("children", [])
+
+        # Build opening tag with attributes
+        if attrs:
+            attr_str = " ".join(f'{k}="{v}"' for k, v in attrs.items())
+            opening_tag = f"<{tag} {attr_str}>"
+        else:
+            opening_tag = f"<{tag}>" if tag else ""
+
+        # Process children
+        children_html = []
+        for child in children:
+            if isinstance(child, str):
+                children_html.append(child)
+            elif isinstance(child, dict):
+                children_html.append(self._node_to_html(child))
+
+        # Build closing tag
+        closing_tag = f"</{tag}>" if tag else ""
+
+        return opening_tag + "".join(children_html) + closing_tag
 
     def create_index_page(self, glossary: Dict[str, Dict[str, Any]], existing_path: Optional[str] = None) -> Dict[str, str]:
         """Create or update the glossary index page."""

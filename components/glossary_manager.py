@@ -5,6 +5,8 @@ from datetime import datetime
 from typing import Dict, Any
 
 from services.telegraph_service import TelegraphService
+from services.content_converter import ContentConverter
+from components.rich_editor import render_rich_editor, inject_editor_rtl_css
 from utils.helpers import show_toast, truncate_text
 
 
@@ -38,17 +40,35 @@ def render_glossary_manager() -> None:
 
 def _render_add_form() -> None:
     with st.expander("Add New Term", expanded=True):
-        with st.form("add_term_form"):
-            new_term = st.text_input("Term", placeholder="e.g., API")
-            new_definition = st.text_area("Definition", placeholder="Enter the definition...", height=100)
-            col1, col2 = st.columns(2)
-            with col1:
-                submit = st.form_submit_button("Add Term", type="primary")
-            with col2:
-                cancel = st.form_submit_button("Cancel")
-            if submit and new_term and new_definition:
-                _add_term(new_term, new_definition)
-            if cancel:
+        # Inject RTL CSS for Hebrew support
+        inject_editor_rtl_css()
+
+        new_term = st.text_input("Term", placeholder="e.g., API", key="add_term_input")
+
+        st.markdown("**Definition**")
+        telegraph_service = st.session_state.get("telegraph")
+        html_content, raw_content = render_rich_editor(
+            key="add_term_editor",
+            initial_content="",
+            initial_mode="markdown",
+            height=250,
+            telegraph_service=telegraph_service,
+            show_preview=True
+        )
+
+        # Store content in session state for form submission
+        st.session_state["add_term_html"] = html_content
+        st.session_state["add_term_raw"] = raw_content
+
+        col1, col2 = st.columns(2)
+        with col1:
+            if st.button("Add Term", type="primary", key="add_term_submit"):
+                if new_term and raw_content:
+                    _add_term(new_term, html_content, raw_content)
+                else:
+                    st.warning("Please enter both term and definition.")
+        with col2:
+            if st.button("Cancel", key="add_term_cancel"):
                 st.session_state.show_add_form = False
                 st.rerun()
 
@@ -81,22 +101,40 @@ def _render_term_card(term: str, data: Dict[str, Any]) -> None:
 
 
 def _render_edit_form(term: str, data: Dict[str, Any]) -> None:
-    with st.form(f"edit_form_{term}"):
-        new_term = st.text_input("Term", value=term)
-        new_definition = st.text_area("Definition", value=data.get("definition", ""), height=150)
-        col1, col2 = st.columns(2)
-        with col1:
-            save = st.form_submit_button("Save", type="primary")
-        with col2:
-            cancel = st.form_submit_button("Cancel")
-        if save and new_term and new_definition:
-            _update_term(term, new_term, new_definition, data)
-        if cancel:
+    # Inject RTL CSS for Hebrew support
+    inject_editor_rtl_css()
+
+    new_term = st.text_input("Term", value=term, key=f"edit_term_input_{term}")
+
+    st.markdown("**Definition**")
+    telegraph_service = st.session_state.get("telegraph")
+
+    # Get initial content - prefer HTML if available, otherwise use plain text
+    initial_content = data.get("definition_html", data.get("definition", ""))
+
+    html_content, raw_content = render_rich_editor(
+        key=f"edit_term_editor_{term}",
+        initial_content=initial_content,
+        initial_mode="markdown",
+        height=250,
+        telegraph_service=telegraph_service,
+        show_preview=True
+    )
+
+    col1, col2 = st.columns(2)
+    with col1:
+        if st.button("Save", type="primary", key=f"edit_save_{term}"):
+            if new_term and raw_content:
+                _update_term(term, new_term, html_content, raw_content, data)
+            else:
+                st.warning("Please enter both term and definition.")
+    with col2:
+        if st.button("Cancel", key=f"edit_cancel_{term}"):
             st.session_state.edit_term = None
             st.rerun()
 
 
-def _add_term(term: str, definition: str) -> None:
+def _add_term(term: str, html_content: str, raw_content: str) -> None:
     glossary = st.session_state.get("glossary", {})
     if term in glossary:
         st.error(f"Term '{term}' already exists.")
@@ -107,19 +145,35 @@ def _add_term(term: str, definition: str) -> None:
         return
     try:
         with st.spinner("Creating Telegraph page..."):
-            result = telegraph.create_term_page(term, definition)
+            # Use is_html=True to pass pre-formatted HTML content
+            result = telegraph.create_term_page(term, html_content, is_html=True)
         now = datetime.now().isoformat()
-        glossary[term] = {"term": term, "definition": definition, "telegraph_path": result["path"], "telegraph_url": result["url"], "created_at": now, "updated_at": now}
+        # Extract plain text for display/search
+        plain_text = ContentConverter.extract_plain_text(html_content)
+        glossary[term] = {
+            "term": term,
+            "definition": plain_text,  # Plain text for backward compatibility
+            "definition_html": html_content,  # HTML for rich display
+            "definition_format": "html",  # Mark as HTML format
+            "telegraph_path": result["path"],
+            "telegraph_url": result["url"],
+            "created_at": now,
+            "updated_at": now
+        }
         st.session_state.glossary = glossary
         _update_index_page(glossary)
         st.session_state.show_add_form = False
+        # Clear editor state
+        for key in list(st.session_state.keys()):
+            if key.startswith("add_term_editor"):
+                del st.session_state[key]
         show_toast(f"Added '{term}'!")
         st.rerun()
     except Exception as e:
         st.error(f"Failed to add term: {e}")
 
 
-def _update_term(old_term: str, new_term: str, new_definition: str, data: Dict[str, Any]) -> None:
+def _update_term(old_term: str, new_term: str, html_content: str, raw_content: str, data: Dict[str, Any]) -> None:
     glossary = st.session_state.get("glossary", {})
     telegraph = st.session_state.get("telegraph")
     if not telegraph:
@@ -129,16 +183,32 @@ def _update_term(old_term: str, new_term: str, new_definition: str, data: Dict[s
         with st.spinner("Updating Telegraph page..."):
             path = data.get("telegraph_path", "")
             if path:
-                result = telegraph.update_term_page(path, new_term, new_definition)
+                # Use is_html=True to pass pre-formatted HTML content
+                result = telegraph.update_term_page(path, new_term, html_content, is_html=True)
             else:
-                result = telegraph.create_term_page(new_term, new_definition)
+                result = telegraph.create_term_page(new_term, html_content, is_html=True)
         if old_term != new_term:
             del glossary[old_term]
         now = datetime.now().isoformat()
-        glossary[new_term] = {"term": new_term, "definition": new_definition, "telegraph_path": result["path"], "telegraph_url": result["url"], "created_at": data.get("created_at", now), "updated_at": now}
+        # Extract plain text for display/search
+        plain_text = ContentConverter.extract_plain_text(html_content)
+        glossary[new_term] = {
+            "term": new_term,
+            "definition": plain_text,  # Plain text for backward compatibility
+            "definition_html": html_content,  # HTML for rich display
+            "definition_format": "html",  # Mark as HTML format
+            "telegraph_path": result["path"],
+            "telegraph_url": result["url"],
+            "created_at": data.get("created_at", now),
+            "updated_at": now
+        }
         st.session_state.glossary = glossary
         _update_index_page(glossary)
         st.session_state.edit_term = None
+        # Clear editor state
+        for key in list(st.session_state.keys()):
+            if key.startswith(f"edit_term_editor_{old_term}"):
+                del st.session_state[key]
         show_toast(f"Updated '{new_term}'!")
         st.rerun()
     except ValueError as e:
