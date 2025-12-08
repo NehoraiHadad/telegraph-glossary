@@ -90,21 +90,42 @@ class TelegraphMCPClient:
         import os
 
         # Find npx - try common locations
-        npx_cmd = shutil.which("npx")
+        npx_cmd = None
+
+        # First try hardcoded paths (most reliable)
+        for path in ["/usr/bin/npx", "/usr/local/bin/npx", "/opt/homebrew/bin/npx"]:
+            if os.path.exists(path) and os.access(path, os.X_OK):
+                npx_cmd = path
+                logger.info(f"Found npx at: {path}")
+                break
+
+        # Fallback to shutil.which
         if not npx_cmd:
-            # Try common paths
-            for path in ["/usr/bin/npx", "/usr/local/bin/npx", os.path.expanduser("~/.nvm/current/bin/npx")]:
+            npx_cmd = shutil.which("npx")
+            if npx_cmd:
+                logger.info(f"Found npx via which: {npx_cmd}")
+
+        # Try nvm paths
+        if not npx_cmd:
+            nvm_paths = [
+                os.path.expanduser("~/.nvm/current/bin/npx"),
+                os.path.expanduser("~/.nvm/versions/node/*/bin/npx"),
+            ]
+            for path in nvm_paths:
                 if os.path.exists(path):
                     npx_cmd = path
+                    logger.info(f"Found npx via nvm: {path}")
                     break
 
         if not npx_cmd:
+            logger.error(f"npx not found. PATH={os.environ.get('PATH', 'NOT SET')}")
             raise RuntimeError("npx not found. Please install Node.js/npm.")
 
         # Include current PATH in environment
         env = os.environ.copy()
         env["TELEGRAPH_ACCESS_TOKEN"] = self.access_token
 
+        logger.info(f"Using npx command: {npx_cmd}")
         return StdioServerParameters(
             command=npx_cmd,
             args=["telegraph-mcp"],
