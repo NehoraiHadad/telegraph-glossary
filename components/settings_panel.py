@@ -80,17 +80,64 @@ def _save_custom_syntax(prefix: str, suffix: str) -> None:
 
 def _render_telegram_bot_settings() -> None:
     from services.telegram_bot_service import TelegramBotService
+
+    # Shared bot token - users don't need to create their own bot!
+    SHARED_BOT_TOKEN = "8464395532:AAGyqZQDsn3s6vZtdcaCe75c_rHZAAKerpM"
+    SHARED_BOT_USERNAME = "TelegraphGlossaryBot"
+
+    st.markdown(f"""
+    **Send messages with clickable links directly to Telegram!**
+
+    The bot is already set up - just add it to your channel and enter your Chat ID.
+    """)
+
+    # Instructions expander
+    with st.expander("How to find your Chat ID", expanded=False):
+        st.markdown(f"""
+        **Step 1:** Add **@{SHARED_BOT_USERNAME}** to your channel/group as admin
+
+        **Step 2:** Find your Chat ID:
+
+        **Public Channels:**
+        - Use `@yourchannel` (with @ symbol)
+
+        **Private Channels/Groups:**
+        - Open [web.telegram.org](https://web.telegram.org)
+        - Go to your channel/group
+        - Look at URL: `web.telegram.org/a/#-1001234567890`
+        - Your Chat ID: `-1001234567890` (including the minus)
+
+        **Alternative:** Add @RawDataBot to your channel, send a message, copy the chat ID, then remove the bot.
+        """)
+
     config = st.session_state.get("config", {})
     telegram_config = config.get("telegram_bot", {})
-    current_token = telegram_config.get("bot_token", "")
     current_chat_id = telegram_config.get("chat_id", "")
-    new_token = st.text_input("Bot Token", value=current_token, type="password")
-    new_chat_id = st.text_input("Chat ID", value=current_chat_id)
-    if current_token and current_chat_id:
-        st.success("Telegram Bot configured")
-    if new_token != current_token or new_chat_id != current_chat_id:
-        if st.button("Save Telegram Settings", type="primary"):
-            _save_telegram_bot_settings(new_token, new_chat_id)
+
+    new_chat_id = st.text_input(
+        "Chat ID",
+        value=current_chat_id,
+        placeholder="@channelname or -1001234567890"
+    )
+
+    col1, col2 = st.columns(2)
+    with col1:
+        if st.button("Test Connection", use_container_width=True):
+            if new_chat_id:
+                is_valid, msg = TelegramBotService.validate_chat_id(SHARED_BOT_TOKEN, new_chat_id.strip())
+                if is_valid:
+                    st.success(msg)
+                else:
+                    st.error(f"Error: {msg}")
+            else:
+                st.warning("Enter a Chat ID first")
+
+    with col2:
+        if new_chat_id != current_chat_id:
+            if st.button("Save Chat ID", type="primary", use_container_width=True):
+                _save_telegram_bot_settings(SHARED_BOT_TOKEN, new_chat_id.strip())
+        elif current_chat_id:
+            st.success("Configured")
 
 
 def _save_telegram_bot_settings(bot_token: str, chat_id: str) -> None:

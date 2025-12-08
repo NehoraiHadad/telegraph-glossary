@@ -66,20 +66,26 @@ def _display_result(processed: str, found_terms: list, missing_terms: list, outp
 
 
 def _display_telegram_output(clean_text: str, found_terms: list) -> None:
+    # Shared bot token - no user setup needed!
+    SHARED_BOT_TOKEN = "8464395532:AAGyqZQDsn3s6vZtdcaCe75c_rHZAAKerpM"
+
     glossary = st.session_state.get("glossary", {})
     config = st.session_state.get("config", {})
     telegram_config = config.get("telegram_bot", {})
-    bot_token = telegram_config.get("bot_token", "")
     chat_id = telegram_config.get("chat_id", "")
+
     terms_with_urls = {}
     for term in set(found_terms):
         data = glossary.get(term, {})
         url = data.get("telegraph_url", "")
         if url:
             terms_with_urls[term] = url
-    if bot_token and chat_id and found_terms:
+
+    if chat_id and found_terms:
         if st.button("Send to Telegram", type="primary"):
-            _send_to_telegram(clean_text, terms_with_urls, bot_token, chat_id)
+            _send_to_telegram(clean_text, terms_with_urls, SHARED_BOT_TOKEN, chat_id)
+    elif not chat_id:
+        st.info("Configure your Chat ID in Settings to send directly to Telegram")
     st.subheader("Text")
     st.code(clean_text, language=None)
     if st.button("Copy Text"):
