@@ -86,10 +86,29 @@ class TelegraphMCPClient:
         Returns:
             StdioServerParameters configured for telegraph-mcp connection
         """
+        import shutil
+        import os
+
+        # Find npx - try common locations
+        npx_cmd = shutil.which("npx")
+        if not npx_cmd:
+            # Try common paths
+            for path in ["/usr/bin/npx", "/usr/local/bin/npx", os.path.expanduser("~/.nvm/current/bin/npx")]:
+                if os.path.exists(path):
+                    npx_cmd = path
+                    break
+
+        if not npx_cmd:
+            raise RuntimeError("npx not found. Please install Node.js/npm.")
+
+        # Include current PATH in environment
+        env = os.environ.copy()
+        env["TELEGRAPH_ACCESS_TOKEN"] = self.access_token
+
         return StdioServerParameters(
-            command="npx",
+            command=npx_cmd,
             args=["telegraph-mcp"],
-            env={"TELEGRAPH_ACCESS_TOKEN": self.access_token}
+            env=env
         )
 
     @asynccontextmanager
