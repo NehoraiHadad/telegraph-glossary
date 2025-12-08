@@ -1,4 +1,4 @@
-"""AI integration UI component."""
+"""AI integration UI component with embedded chat."""
 
 import json
 import subprocess
@@ -7,20 +7,30 @@ import streamlit as st
 import streamlit.components.v1 as components
 
 from utils.helpers import show_toast
+from components.ai_chat import render_ai_chat
 
 
 def render_ai_integration() -> None:
-    """Render the AI integration tab."""
+    """Render the AI integration tab with chat and configuration."""
     st.header("AI Integration")
-    st.markdown("Connect your glossary to AI tools like Claude Desktop or Claude Code using the Telegraph MCP server.")
-    st.subheader("MCP Server Configuration")
-    _render_mcp_config()
-    st.divider()
-    st.subheader("Open AI Tools")
-    _render_ai_tools()
-    st.divider()
-    st.subheader("Setup Instructions")
-    _render_instructions()
+
+    # Create sub-tabs for Chat and Configuration
+    chat_tab, config_tab = st.tabs(["AI Chat", "MCP Configuration"])
+
+    with chat_tab:
+        st.markdown("Chat with AI to manage your glossary using natural language.")
+        render_ai_chat()
+
+    with config_tab:
+        st.markdown("Connect your glossary to AI tools like Claude Desktop or Claude Code using the Telegraph MCP server.")
+        st.subheader("MCP Server Configuration")
+        _render_mcp_config()
+        st.divider()
+        st.subheader("Open AI Tools")
+        _render_ai_tools()
+        st.divider()
+        st.subheader("Setup Instructions")
+        _render_instructions()
 
 
 def _render_mcp_config() -> None:
