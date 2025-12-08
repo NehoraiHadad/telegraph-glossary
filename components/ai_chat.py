@@ -395,7 +395,7 @@ Always confirm what action you took after using a tool."""
 
 def _handle_tool_calls(
     tool_calls: List[Dict],
-    mcp_client: TelegraphMCPClient,
+    tools_client,
     provider,
     messages: List[Dict],
     tools: List[Dict],
@@ -411,7 +411,7 @@ def _handle_tool_calls(
 
     Args:
         tool_calls: List of tool call dictionaries from AI
-        mcp_client: Telegraph MCP client instance
+        tools_client: Telegraph tools client (MCP or Direct)
         provider: AI provider instance
         messages: Conversation messages so far
         tools: List of available tools
@@ -430,7 +430,7 @@ def _handle_tool_calls(
 
         with st.status(f"Executing {tool_name}...", expanded=True) as status:
             try:
-                result = mcp_client.call_tool_sync(tool_name, tool_input)
+                result = tools_client.call_tool_sync(tool_name, tool_input)
                 status.update(label=f"{tool_name} completed", state="complete")
                 logger.info(f"Tool {tool_name} executed successfully")
 
