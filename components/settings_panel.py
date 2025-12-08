@@ -99,8 +99,8 @@ def _render_telegram_bot_settings() -> None:
     The bot is already set up - just add it to your channel and enter your Chat ID.
     """)
 
-    # Bookmark info
-    st.info("Your Chat ID is saved in the URL. **Bookmark this page** to keep your settings!")
+    # Bookmark info with copy URL button
+    _render_bookmark_helper()
 
     # Instructions expander
     with st.expander("How to find your Chat ID", expanded=False):
@@ -150,6 +150,36 @@ def _render_telegram_bot_settings() -> None:
                 _save_telegram_chat_id(new_chat_id.strip())
         elif current_chat_id:
             st.success("Configured")
+
+
+def _render_bookmark_helper() -> None:
+    """Render bookmark helper with copy URL button."""
+    import streamlit.components.v1 as components
+
+    chat_id = UserSettingsManager.get_chat_id()
+
+    if chat_id:
+        # User has settings - show how to save them
+        st.info("Your settings are saved in the URL. **Bookmark this page** or copy the URL below!")
+
+        col1, col2 = st.columns([3, 1])
+        with col1:
+            st.caption("Press **Ctrl+D** (Windows/Linux) or **Cmd+D** (Mac) to bookmark")
+        with col2:
+            if st.button("Copy URL", key="copy_settings_url", use_container_width=True):
+                # JavaScript to copy current URL to clipboard
+                components.html(
+                    """
+                    <script>
+                    navigator.clipboard.writeText(window.parent.location.href);
+                    </script>
+                    """,
+                    height=0
+                )
+                st.toast("URL copied! Paste it somewhere safe.")
+    else:
+        # No settings yet
+        st.info("Enter your Chat ID below. Your settings will be saved in the URL - bookmark to keep them!")
 
 
 def _save_telegram_chat_id(chat_id: str) -> None:
