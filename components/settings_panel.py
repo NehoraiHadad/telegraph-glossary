@@ -124,14 +124,16 @@ def _render_telegram_bot_settings() -> None:
     col1, col2 = st.columns(2)
     with col1:
         if st.button("Test Connection", use_container_width=True):
-            if new_chat_id:
+            if not SHARED_BOT_TOKEN:
+                st.error("Bot token not configured! Add [telegram] bot_token to Streamlit secrets.")
+            elif not new_chat_id:
+                st.warning("Enter a Chat ID first")
+            else:
                 is_valid, msg = TelegramBotService.validate_chat_id(SHARED_BOT_TOKEN, new_chat_id.strip())
                 if is_valid:
                     st.success(msg)
                 else:
                     st.error(f"Error: {msg}")
-            else:
-                st.warning("Enter a Chat ID first")
 
     with col2:
         if new_chat_id != current_chat_id:

@@ -14,12 +14,23 @@ class TelegramBotService:
         self.bot_token = bot_token
 
     def _call_api(self, method: str, params: dict) -> dict:
+        if not self.bot_token:
+            raise Exception("Bot token is not configured. Check Streamlit secrets.")
         url = self.BASE_URL.format(token=self.bot_token, method=method)
         response = requests.post(url, json=params, timeout=30)
         result = response.json()
         if not result.get("ok"):
+            error_code = result.get("error_code", "")
             error_msg = result.get("description", "Unknown error")
-            raise Exception(f"Telegram API error: {error_msg}")
+            # Add helpful hints based on error type
+            hint = ""
+            if error_code == 404 or "Not Found" in error_msg:
+                hint = " (Check: Is bot added as admin to the channel?)"
+            elif error_code == 401 or "Unauthorized" in error_msg:
+                hint = " (Check: Is the bot token correct?)"
+            elif "chat not found" in error_msg.lower():
+                hint = " (Check: Is the Chat ID correct? For private channels use -100XXXXXXXXXX)"
+            raise Exception(f"Telegram API error [{error_code}]: {error_msg}{hint}")
         return result.get("result", {})
 
     def get_me(self) -> dict:
