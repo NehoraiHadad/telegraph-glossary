@@ -202,10 +202,10 @@ class GeminiProvider(AIProviderBase):
             content = msg.get("content", "")
 
             if isinstance(content, str):
-                # Simple text content
+                # Simple text content - use Part(text=...) instead of Part.from_text()
                 contents.append(types.Content(
                     role=role,
-                    parts=[types.Part.from_text(content)]
+                    parts=[types.Part(text=content)]
                 ))
             elif isinstance(content, list):
                 # Structured content (tool results, multiple parts, etc.)
@@ -213,7 +213,7 @@ class GeminiProvider(AIProviderBase):
                 for item in content:
                     if isinstance(item, dict):
                         if item.get("type") == "text":
-                            parts.append(types.Part.from_text(item.get("text", "")))
+                            parts.append(types.Part(text=item.get("text", "")))
                         elif item.get("type") == "function_response":
                             parts.append(types.FunctionResponse(
                                 name=item.get("name", ""),
