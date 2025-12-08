@@ -267,12 +267,46 @@ def _render_image_uploader(
     telegraph_service
 ) -> None:
     """Render image uploader that inserts images into the editor."""
-    with st.expander("📷 Upload Image", expanded=False):
+    with st.expander("📷 Add Image", expanded=False):
+        st.warning("⚠️ Telegraph disabled direct image uploads. Use an external image URL instead.")
+
+        # Option to add image via URL
+        image_url = st.text_input(
+            "Image URL",
+            key=f"{key}_image_url",
+            placeholder="https://example.com/image.jpg"
+        )
+        image_description = st.text_input(
+            "Image description (alt text)",
+            key=f"{key}_img_desc_url",
+            placeholder="Brief description..."
+        )
+
+        if st.button("Insert Image from URL", key=f"{key}_insert_url_img", type="primary"):
+            if image_url:
+                _insert_image_from_url(
+                    image_url,
+                    image_description,
+                    state_key_mode,
+                    state_key_content,
+                    state_key_wysiwyg_content
+                )
+            else:
+                st.error("Please enter an image URL")
+
+        st.divider()
+        st.caption("💡 Tip: You can upload images to [imgbb.com](https://imgbb.com), [imgur.com](https://imgur.com), or [postimages.org](https://postimages.org) and paste the URL here.")
+
+        # Keep old uploader hidden but available if Telegraph re-enables uploads
+        show_direct_upload = st.checkbox("Try direct upload anyway (may not work)", key=f"{key}_show_direct")
+        if not show_direct_upload:
+            return
+
         uploaded_file = st.file_uploader(
             "Choose an image",
             type=["jpg", "jpeg", "png", "gif"],
             key=f"{key}_image_uploader",
-            help="Upload an image to insert into your content"
+            help="Direct upload to Telegraph (currently disabled by Telegraph)"
         )
 
         if uploaded_file is not None:
@@ -298,6 +332,29 @@ def _render_image_uploader(
                         state_key_wysiwyg_content,
                         telegraph_service
                     )
+
+
+def _insert_image_from_url(
+    image_url: str,
+    description: str,
+    state_key_mode: str,
+    state_key_content: str,
+    state_key_wysiwyg_content: str
+) -> None:
+    """Insert an image from URL into the editor."""
+    current_mode = st.session_state[state_key_mode]
+    alt_text = description or "image"
+
+    if current_mode == "markdown":
+        markdown_img = f"\n![{alt_text}]({image_url})\n"
+        st.session_state[state_key_content] += markdown_img
+        st.success("Image inserted!")
+    else:
+        html_img = f'\n<figure><img src="{image_url}" alt="{alt_text}"/></figure>\n'
+        st.session_state[state_key_wysiwyg_content] += html_img
+        st.success("Image inserted!")
+
+    st.rerun()
 
 
 def _handle_image_insertion(

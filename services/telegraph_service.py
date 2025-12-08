@@ -76,20 +76,21 @@ class TelegraphService:
             author_name=author_name,
         )
 
-        # Verify the update actually happened
-        verification = self.get_page(path)
-        if verification:
-            content = verification.get("content", [])
-            content_str = str(content)
-            # Check if the definition (first 50 chars) is in the content
-            # Check both raw and escaped versions since Telegraph might return either
-            check_text = definition[:50] if len(definition) >= 50 else definition
-            check_text_escaped = self._escape_html(check_text)
-            if check_text not in content_str and check_text_escaped not in content_str:
-                raise ValueError(
-                    f"Telegraph page update verification failed - content mismatch. "
-                    f"The page may not have been updated. Try deleting and recreating the term."
-                )
+        # Verify the update actually happened (skip for HTML content as structure may differ)
+        if not is_html:
+            verification = self.get_page(path)
+            if verification:
+                content = verification.get("content", [])
+                content_str = str(content)
+                # Check if the definition (first 50 chars) is in the content
+                # Check both raw and escaped versions since Telegraph might return either
+                check_text = definition[:50] if len(definition) >= 50 else definition
+                check_text_escaped = self._escape_html(check_text)
+                if check_text not in content_str and check_text_escaped not in content_str:
+                    raise ValueError(
+                        f"Telegraph page update verification failed - content mismatch. "
+                        f"The page may not have been updated. Try deleting and recreating the term."
+                    )
 
         return {"path": result["path"], "url": f"https://telegra.ph/{result['path']}"}
 
