@@ -79,10 +79,11 @@ def _save_custom_syntax(prefix: str, suffix: str) -> None:
 
 
 def _render_telegram_bot_settings() -> None:
+    import os
     from services.telegram_bot_service import TelegramBotService
 
-    # Shared bot token - users don't need to create their own bot!
-    SHARED_BOT_TOKEN = "8464395532:AAGyqZQDsn3s6vZtdcaCe75c_rHZAAKerpM"
+    # Get bot token from secrets/environment (shared bot - users don't need their own)
+    SHARED_BOT_TOKEN = st.secrets.get("telegram", {}).get("bot_token") or os.environ.get("TELEGRAM_BOT_TOKEN", "")
     SHARED_BOT_USERNAME = "TelegraphGlossaryBot"
 
     st.markdown(f"""

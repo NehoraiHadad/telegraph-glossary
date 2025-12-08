@@ -66,8 +66,9 @@ def _display_result(processed: str, found_terms: list, missing_terms: list, outp
 
 
 def _display_telegram_output(clean_text: str, found_terms: list) -> None:
-    # Shared bot token - no user setup needed!
-    SHARED_BOT_TOKEN = "8464395532:AAGyqZQDsn3s6vZtdcaCe75c_rHZAAKerpM"
+    import os
+    # Get bot token from secrets/environment (shared bot - no user setup needed)
+    SHARED_BOT_TOKEN = st.secrets.get("telegram", {}).get("bot_token") or os.environ.get("TELEGRAM_BOT_TOKEN", "")
 
     glossary = st.session_state.get("glossary", {})
     config = st.session_state.get("config", {})
