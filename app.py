@@ -3,6 +3,7 @@
 import streamlit as st
 
 from services.config_manager import ConfigManager
+from services.user_settings_manager import UserSettingsManager
 from services.telegraph_service import TelegraphService
 from components.glossary_manager import render_glossary_manager
 from components.text_processor import render_text_processor
@@ -34,16 +35,25 @@ def init_session_state() -> None:
 def load_app() -> None:
     """Load configuration and initialize services."""
     config_manager = ConfigManager()
-    config = config_manager.load()
+    admin_config = config_manager.load()
+
+    # Get user settings from URL params
+    user_settings = UserSettingsManager.get_all_user_settings()
+
+    # Merge admin config with user settings for backward compatibility
+    config = {
+        **admin_config,
+        **user_settings,
+    }
     st.session_state.config = config
 
     if config_manager.is_configured():
-        access_token = config["telegraph"]["access_token"]
+        access_token = admin_config["telegraph"]["access_token"]
         telegraph = TelegraphService(access_token)
         st.session_state.telegraph = telegraph
 
         # Load glossary from Telegraph
-        index_path = config["telegraph"].get("index_page_path")
+        index_path = admin_config["telegraph"].get("index_page_path")
         if index_path:
             try:
                 glossary = telegraph.load_glossary_from_index(index_path)
@@ -86,12 +96,10 @@ def render_sidebar() -> None:
 
         st.divider()
 
-        # Current syntax
+        # Current syntax - get from UserSettingsManager
         st.subheader("Current Syntax")
-        settings = config.get("settings", {})
-        syntax = settings.get("marking_syntax", "<?>")
-        custom_prefix = settings.get("custom_prefix", "")
-        custom_suffix = settings.get("custom_suffix", "")
+        syntax = UserSettingsManager.get_marking_syntax()
+        custom_prefix, custom_suffix = UserSettingsManager.get_custom_syntax()
 
         from services.text_parser import SYNTAX_PATTERNS, create_custom_syntax
         if syntax == "custom" and custom_prefix and custom_suffix:
@@ -145,8 +153,41 @@ def _sync_glossary() -> None:
 
 
 def render_setup_wizard() -> None:
-    """Render first-time setup wizard."""
+    """Render first-time setup wizard (local development only)."""
     st.title("Welcome to Telegraph Glossary")
+
+    config_manager = ConfigManager()
+    if config_manager.is_cloud_mode():
+        # Cloud mode - show instructions to configure secrets
+        st.markdown("""
+        ## Setup Required
+
+        This application requires Telegraph credentials to be configured.
+
+        **For Streamlit Cloud deployment:**
+
+        1. Go to your app's **Settings** > **Secrets**
+        2. Add the following configuration:
+
+        ```toml
+        [telegraph]
+        access_token = "your-telegraph-access-token"
+        short_name = "YourGlossaryName"
+        author_name = "Your Name"
+        index_page_path = "your-index-page-path"
+
+        [telegram]
+        bot_token = "your-telegram-bot-token"
+        ```
+
+        3. To get Telegraph credentials, create an account at [telegra.ph](https://telegra.ph)
+           or run this app locally first to generate them automatically.
+
+        4. Redeploy or refresh the app after adding secrets.
+        """)
+        return
+
+    # Local mode - show setup form
     st.markdown(
         "Create and manage your personal glossary with Telegraph integration. "
         "Let's set up your account!"
@@ -178,7 +219,7 @@ def render_setup_wizard() -> None:
 
 
 def _setup_account(short_name: str, author_name: str) -> None:
-    """Set up new Telegraph account."""
+    """Set up new Telegraph account (local development only)."""
     try:
         with st.spinner("Setting up your account..."):
             telegraph = TelegraphService()

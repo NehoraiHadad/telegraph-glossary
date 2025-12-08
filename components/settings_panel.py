@@ -3,7 +3,7 @@
 import streamlit as st
 from typing import Dict, Any
 
-from services.config_manager import ConfigManager
+from services.user_settings_manager import UserSettingsManager
 from services.text_parser import SYNTAX_PATTERNS, validate_custom_syntax, create_custom_syntax
 from utils.helpers import show_toast
 
@@ -24,18 +24,26 @@ def render_settings() -> None:
 
 
 def _render_syntax_settings() -> None:
-    config = st.session_state.get("config", {})
-    settings = config.get("settings", {})
-    current_syntax = settings.get("marking_syntax", "<?>")
-    current_prefix = settings.get("custom_prefix", "")
-    current_suffix = settings.get("custom_suffix", "")
+    # Get syntax from UserSettingsManager instead of config
+    current_syntax = UserSettingsManager.get_marking_syntax()
+    current_prefix, current_suffix = UserSettingsManager.get_custom_syntax()
+
     syntax_options = list(SYNTAX_PATTERNS.keys()) + ["custom"]
+
     def format_syntax(x):
         if x == "custom":
             return "Custom (define your own)"
         return f"{SYNTAX_PATTERNS[x]['display']} - Example: {SYNTAX_PATTERNS[x]['example']}"
+
     current_index = syntax_options.index(current_syntax) if current_syntax in syntax_options else 0
-    selected_syntax = st.radio("Marking Syntax", options=syntax_options, index=current_index, format_func=format_syntax, label_visibility="collapsed")
+    selected_syntax = st.radio(
+        "Marking Syntax",
+        options=syntax_options,
+        index=current_index,
+        format_func=format_syntax,
+        label_visibility="collapsed"
+    )
+
     if selected_syntax == "custom":
         col1, col2 = st.columns(2)
         with col1:
@@ -57,23 +65,22 @@ def _render_syntax_settings() -> None:
 
 
 def _save_syntax(syntax: str) -> None:
-    config_manager = ConfigManager()
-    config_manager.load()
-    config_manager.set("settings.marking_syntax", syntax)
-    st.session_state.config["settings"]["marking_syntax"] = syntax
-    show_toast("Syntax saved!")
+    UserSettingsManager.set_marking_syntax(syntax)
+    # Update session state for backward compatibility
+    if "config" in st.session_state and "settings" in st.session_state.config:
+        st.session_state.config["settings"]["marking_syntax"] = syntax
+    show_toast("Syntax saved! Bookmark this page to keep your settings.")
     st.rerun()
 
 
 def _save_custom_syntax(prefix: str, suffix: str) -> None:
-    config_manager = ConfigManager()
-    config_manager.load()
-    config_manager.set("settings.marking_syntax", "custom")
-    config_manager.set("settings.custom_prefix", prefix)
-    config_manager.set("settings.custom_suffix", suffix)
-    st.session_state.config["settings"]["marking_syntax"] = "custom"
-    st.session_state.config["settings"]["custom_prefix"] = prefix
-    st.session_state.config["settings"]["custom_suffix"] = suffix
+    UserSettingsManager.set_custom_syntax(prefix, suffix)
+    UserSettingsManager.set_marking_syntax("custom")
+    # Update session state for backward compatibility
+    if "config" in st.session_state and "settings" in st.session_state.config:
+        st.session_state.config["settings"]["marking_syntax"] = "custom"
+        st.session_state.config["settings"]["custom_prefix"] = prefix
+        st.session_state.config["settings"]["custom_suffix"] = suffix
     show_toast(f"Custom syntax saved: {prefix}term{suffix}")
     st.rerun()
 
@@ -91,6 +98,9 @@ def _render_telegram_bot_settings() -> None:
 
     The bot is already set up - just add it to your channel and enter your Chat ID.
     """)
+
+    # Bookmark info
+    st.info("Your Chat ID is saved in the URL. **Bookmark this page** to keep your settings!")
 
     # Instructions expander
     with st.expander("How to find your Chat ID", expanded=False):
@@ -111,9 +121,8 @@ def _render_telegram_bot_settings() -> None:
         **Alternative:** Add @RawDataBot to your channel, send a message, copy the chat ID, then remove the bot.
         """)
 
-    config = st.session_state.get("config", {})
-    telegram_config = config.get("telegram_bot", {})
-    current_chat_id = telegram_config.get("chat_id", "")
+    # Get chat_id from UserSettingsManager
+    current_chat_id = UserSettingsManager.get_chat_id()
 
     new_chat_id = st.text_input(
         "Chat ID",
@@ -138,21 +147,19 @@ def _render_telegram_bot_settings() -> None:
     with col2:
         if new_chat_id != current_chat_id:
             if st.button("Save Chat ID", type="primary", use_container_width=True):
-                _save_telegram_bot_settings(SHARED_BOT_TOKEN, new_chat_id.strip())
+                _save_telegram_chat_id(new_chat_id.strip())
         elif current_chat_id:
             st.success("Configured")
 
 
-def _save_telegram_bot_settings(bot_token: str, chat_id: str) -> None:
-    config_manager = ConfigManager()
-    config_manager.load()
-    config_manager.set("telegram_bot.bot_token", bot_token)
-    config_manager.set("telegram_bot.chat_id", chat_id)
-    if "telegram_bot" not in st.session_state.config:
-        st.session_state.config["telegram_bot"] = {}
-    st.session_state.config["telegram_bot"]["bot_token"] = bot_token
-    st.session_state.config["telegram_bot"]["chat_id"] = chat_id
-    show_toast("Telegram settings saved!")
+def _save_telegram_chat_id(chat_id: str) -> None:
+    UserSettingsManager.set_chat_id(chat_id)
+    # Update session state for backward compatibility
+    if "config" in st.session_state:
+        if "telegram_bot" not in st.session_state.config:
+            st.session_state.config["telegram_bot"] = {}
+        st.session_state.config["telegram_bot"]["chat_id"] = chat_id
+    show_toast("Chat ID saved! Bookmark this page to keep your settings.")
     st.rerun()
 
 
