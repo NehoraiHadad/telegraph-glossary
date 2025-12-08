@@ -1,5 +1,6 @@
 """Telegraph Glossary - Personal glossary with Telegraph integration."""
 
+import os
 import streamlit as st
 
 from services.user_settings_manager import UserSettingsManager
@@ -37,8 +38,8 @@ def load_app() -> None:
     user_settings = UserSettingsManager.get_all_user_settings()
     st.session_state.config = user_settings
 
-    # Load imgbb API key from URL (for image uploads)
-    imgbb_key = UserSettingsManager.get_imgbb_api_key()
+    # Load imgbb API key from secrets (server-side)
+    imgbb_key = st.secrets.get("imgbb", {}).get("api_key") or os.environ.get("IMGBB_API_KEY", "")
     if imgbb_key:
         st.session_state.imgbb_api_key = imgbb_key
 

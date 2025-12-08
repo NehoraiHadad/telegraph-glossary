@@ -24,7 +24,6 @@ PARAM_KEYS = {
     "marking_syntax": "syn",
     "custom_prefix": "cpre",
     "custom_suffix": "csuf",
-    "imgbb_api_key": "ibb",  # imgbb image hosting API key
     # Telegraph settings (per-user)
     "access_token": "tok",
     "short_name": "sn",
@@ -288,30 +287,3 @@ class UserSettingsManager:
             "index_page_path": cls.get_index_page_path(),
         }
 
-    # ========== Image Hosting Settings ==========
-
-    @classmethod
-    def get_imgbb_api_key(cls) -> str:
-        """Get the user's imgbb API key from URL.
-
-        Returns:
-            The API key or empty string if not set
-        """
-        # Check session state cache first
-        if "imgbb_api_key" in st.session_state:
-            return st.session_state.imgbb_api_key
-
-        api_key = cls._get_param("imgbb_api_key")
-        st.session_state.imgbb_api_key = api_key
-        return api_key
-
-    @classmethod
-    def set_imgbb_api_key(cls, api_key: str) -> None:
-        """Set the user's imgbb API key in URL.
-
-        Args:
-            api_key: The imgbb API key
-        """
-        cleaned = api_key.strip() if api_key else ""
-        cls._set_param("imgbb_api_key", cleaned)
-        st.session_state.imgbb_api_key = cleaned

@@ -160,17 +160,12 @@ def _render_native_upload(key: str, state_key_content: str, api_key: str) -> Non
 
 
 def _render_url_only_mode(key: str, state_key_content: str) -> None:
-    """Render URL-only mode with setup hint."""
+    """Render URL-only mode."""
 
-    st.info(
-        "**Native upload available!** Add your imgbb API key in Settings to upload images directly. "
-        "[Get free API key](https://api.imgbb.com/)"
-    )
-
-    st.markdown("**Or paste an image URL:**")
+    st.markdown("**Paste an image URL:**")
     _render_url_input(key, state_key_content)
 
-    with st.expander("Manual upload options"):
+    with st.expander("Where to upload images"):
         st.markdown("""
         Upload your image to one of these free services:
         - [imgbb.com](https://imgbb.com) - No signup required
