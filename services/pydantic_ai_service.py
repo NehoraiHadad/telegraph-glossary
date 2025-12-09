@@ -19,6 +19,16 @@ from dataclasses import dataclass
 
 from pydantic_ai import Agent
 from pydantic_ai.mcp import MCPServerStdio
+from pydantic_ai import (
+    AgentStreamEvent,
+    AgentRunResultEvent,
+    FunctionToolCallEvent,
+    FunctionToolResultEvent,
+    PartDeltaEvent,
+    PartStartEvent,
+    TextPartDelta,
+)
+from enum import Enum
 
 logger = logging.getLogger(__name__)
 
@@ -43,6 +53,29 @@ class GlossaryContext:
     access_token: str
     glossary: Dict[str, Any]
     author_name: str = "Telegraph Glossary"
+
+
+class EventType(str, Enum):
+    """Types of streaming events for UI consumption."""
+    TOOL_CALL = "tool_call"
+    TOOL_RESULT = "tool_result"
+    TEXT = "text"
+    TEXT_DELTA = "text_delta"
+    DONE = "done"
+    ERROR = "error"
+
+
+@dataclass
+class StreamEvent:
+    """
+    Structured event for UI consumption during streaming.
+
+    Attributes:
+        type: The type of event (tool_call, tool_result, text, etc.)
+        data: Event-specific data
+    """
+    type: EventType
+    data: Dict[str, Any]
 
 
 def can_use_mcp() -> bool:
@@ -282,6 +315,158 @@ Always confirm what action you took after using a tool."""
         except Exception as e:
             logger.error(f"Error in chat_stream: {e}", exc_info=True)
             yield f"Error: {str(e)}"
+
+    def chat_stream_with_events(
+        self, prompt: str, message_history: Optional[List[Dict]] = None
+    ) -> Generator[StreamEvent, None, None]:
+        """
+        Stream response with full event visibility including tool calls.
+
+        This method yields structured StreamEvent objects that include:
+        - Tool calls (when the AI decides to use a tool)
+        - Tool results (when a tool returns)
+        - Text deltas (streaming text chunks)
+        - Done signal (when complete)
+
+        Args:
+            prompt: User's message
+            message_history: Optional conversation history
+
+        Yields:
+            StreamEvent objects for UI consumption
+        """
+        try:
+            if self.use_mcp:
+                yield from self._stream_events_with_mcp(prompt)
+            else:
+                yield from self._stream_events_with_direct_tools(prompt)
+        except Exception as e:
+            logger.error(f"Error in chat_stream_with_events: {e}", exc_info=True)
+            yield StreamEvent(type=EventType.ERROR, data={"message": str(e)})
+
+    def _stream_events_with_mcp(self, prompt: str) -> Generator[StreamEvent, None, None]:
+        """Stream events using MCP server."""
+        yield from self._run_event_streaming_in_thread(prompt, use_mcp=True)
+
+    def _stream_events_with_direct_tools(self, prompt: str) -> Generator[StreamEvent, None, None]:
+        """Stream events using direct Python tools."""
+        yield from self._run_event_streaming_in_thread(prompt, use_mcp=False)
+
+    def _run_event_streaming_in_thread(self, prompt: str, use_mcp: bool) -> Generator[StreamEvent, None, None]:
+        """
+        Run async event streaming in a separate thread.
+
+        Uses a thread-safe queue to pass StreamEvent objects from async context to sync generator.
+        """
+        event_queue: queue.Queue = queue.Queue()
+        error_holder: List[Optional[Exception]] = [None]
+
+        def run_async():
+            """Run the async event streaming in a new event loop."""
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            try:
+                loop.run_until_complete(self._async_events_to_queue(prompt, event_queue, use_mcp))
+            except Exception as e:
+                error_holder[0] = e
+                event_queue.put(None)  # Signal end
+            finally:
+                loop.close()
+
+        # Start async streaming in a separate thread
+        thread = threading.Thread(target=run_async, daemon=True)
+        thread.start()
+
+        # Yield events as they arrive
+        while True:
+            try:
+                event = event_queue.get(timeout=120)  # 2 minute timeout for tool execution
+                if event is None:  # End signal
+                    break
+                yield event
+            except queue.Empty:
+                yield StreamEvent(type=EventType.ERROR, data={"message": "Streaming timeout"})
+                break
+
+        # Wait for thread to finish
+        thread.join(timeout=5)
+
+        # Check for errors
+        if error_holder[0]:
+            yield StreamEvent(type=EventType.ERROR, data={"message": str(error_holder[0])})
+
+    async def _async_events_to_queue(self, prompt: str, event_queue: queue.Queue, use_mcp: bool) -> None:
+        """Async method that processes events and puts StreamEvents in queue."""
+        full_text = ""
+
+        try:
+            if use_mcp:
+                mcp_server = self._create_mcp_server()
+                async with mcp_server:
+                    agent = self._create_agent_with_mcp(mcp_server)
+                    async for event in agent.run_stream_events(prompt):
+                        stream_event = self._process_agent_event(event, full_text)
+                        if stream_event:
+                            if stream_event.type == EventType.TEXT_DELTA:
+                                full_text += stream_event.data.get("delta", "")
+                            event_queue.put(stream_event)
+            else:
+                agent = self._create_agent_with_direct_tools()
+                async for event in agent.run_stream_events(prompt):
+                    stream_event = self._process_agent_event(event, full_text)
+                    if stream_event:
+                        if stream_event.type == EventType.TEXT_DELTA:
+                            full_text += stream_event.data.get("delta", "")
+                        event_queue.put(stream_event)
+
+            # Send final done event with complete text
+            event_queue.put(StreamEvent(type=EventType.DONE, data={"text": full_text}))
+
+        finally:
+            event_queue.put(None)  # Signal end of stream
+
+    def _process_agent_event(self, event: AgentStreamEvent, current_text: str) -> Optional[StreamEvent]:
+        """Convert PydanticAI event to StreamEvent for UI consumption."""
+        if isinstance(event, FunctionToolCallEvent):
+            # Tool is being called
+            return StreamEvent(
+                type=EventType.TOOL_CALL,
+                data={
+                    "tool_name": event.part.tool_name,
+                    "args": event.part.args,
+                    "tool_call_id": event.part.tool_call_id,
+                }
+            )
+        elif isinstance(event, FunctionToolResultEvent):
+            # Tool returned result
+            result_content = event.result.content
+            if isinstance(result_content, dict):
+                result_str = str(result_content)
+            else:
+                result_str = str(result_content)
+            return StreamEvent(
+                type=EventType.TOOL_RESULT,
+                data={
+                    "tool_call_id": event.tool_call_id,
+                    "result": result_str[:500],  # Truncate long results
+                    "success": not hasattr(event.result, 'error') or not event.result.error,
+                }
+            )
+        elif isinstance(event, PartDeltaEvent):
+            if isinstance(event.delta, TextPartDelta):
+                # Streaming text chunk
+                return StreamEvent(
+                    type=EventType.TEXT_DELTA,
+                    data={"delta": event.delta.content_delta}
+                )
+        elif isinstance(event, AgentRunResultEvent):
+            # Final result (handled in _async_events_to_queue)
+            return StreamEvent(
+                type=EventType.TEXT,
+                data={"text": str(event.result.output)}
+            )
+
+        return None
 
     def _stream_with_mcp(self, prompt: str, message_history: Optional[List[Dict]] = None) -> Generator[str, None, None]:
         """Stream response using MCP server."""
