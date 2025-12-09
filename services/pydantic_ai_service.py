@@ -136,18 +136,22 @@ You have access to tools to create, edit, and manage Telegraph pages.
 Current glossary has {len(self.glossary)} terms."""
 
         if self.glossary:
-            terms_list = ", ".join(list(self.glossary.keys())[:20])
-            if len(self.glossary) > 20:
-                terms_list += f"... and {len(self.glossary) - 20} more"
-            prompt += f"\nExisting terms: {terms_list}"
+            # Show all terms with their paths for editing
+            terms_with_paths = []
+            for term, data in sorted(self.glossary.items()):
+                path = data.get("telegraph_path", "")
+                terms_with_paths.append(f"- {term}: path={path}")
+            terms_list = "\n".join(terms_with_paths)
+            prompt += f"\n\nEXISTING TERMS (with paths for editing):\n{terms_list}"
 
         prompt += """
 
-When the user asks you to create or edit glossary entries:
-1. Use the create_page tool for new entries
-2. Use the edit_page tool to update existing entries
-3. Format content in Markdown
-4. Be concise and helpful
+IMPORTANT RULES:
+1. ALWAYS check the EXISTING TERMS list above before saying a term doesn't exist
+2. Use edit_page (with the path shown above) for terms that already exist
+3. Use create_page only for genuinely NEW terms not in the list
+4. Format content in Markdown
+5. Be concise and helpful
 
 Always confirm what action you took after using a tool."""
 
