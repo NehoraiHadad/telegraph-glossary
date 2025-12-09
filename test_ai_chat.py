@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Test script for AI Chat component.
+"""Test script for AI Chat component with PydanticAI.
 
-This script demonstrates the AI chat component integration
-and verifies that all dependencies are properly imported.
+This script verifies that the PydanticAI-based AI chat component
+and all dependencies are properly imported and configured.
 """
 
 import sys
@@ -11,22 +11,23 @@ import os
 # Add project root to path
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+
 def test_imports():
     """Test that all required modules can be imported."""
     print("Testing imports...")
 
     try:
-        from services.mcp_client import TelegraphMCPClient
-        print("✓ MCP Client imported")
+        from services.pydantic_ai_service import TelegraphAIService, can_use_mcp
+        print("✓ PydanticAI Service imported")
     except Exception as e:
-        print(f"✗ MCP Client import failed: {e}")
+        print(f"✗ PydanticAI Service import failed: {e}")
         return False
 
     try:
-        from services.ai_providers import ClaudeProvider, OpenAIProvider, GeminiProvider
-        print("✓ AI Providers imported")
+        from services.direct_telegraph_tools import DirectTelegraphTools
+        print("✓ Direct Telegraph Tools imported")
     except Exception as e:
-        print(f"✗ AI Providers import failed: {e}")
+        print(f"✗ Direct Telegraph Tools import failed: {e}")
         return False
 
     try:
@@ -58,19 +59,13 @@ def test_component_structure():
         assert hasattr(ai_chat, 'render_ai_chat'), "Missing render_ai_chat function"
         print("✓ render_ai_chat function exists")
 
-        # Check that private functions exist
+        # Check that private functions exist (simplified version)
         private_functions = [
             '_init_chat_state',
             '_render_api_config',
             '_check_prerequisites',
             '_render_chat_history',
             '_handle_chat_input',
-            '_get_ai_response',
-            '_get_provider',
-            '_build_messages_for_ai',
-            '_build_system_prompt',
-            '_handle_tool_calls',
-            '_extract_text_response'
         ]
 
         for func_name in private_functions:
@@ -85,44 +80,66 @@ def test_component_structure():
         return False
 
 
-def test_provider_initialization():
-    """Test that AI providers can be initialized with dummy keys."""
-    print("\nTesting AI provider initialization...")
+def test_pydantic_ai_service():
+    """Test that PydanticAI service is properly configured."""
+    print("\nTesting PydanticAI service...")
 
     try:
-        from services.ai_providers import ClaudeProvider, OpenAIProvider, GeminiProvider
+        from services.pydantic_ai_service import TelegraphAIService, MODEL_NAMES, can_use_mcp
 
-        # Test with dummy API keys (won't make actual calls)
-        dummy_key = "test_key_12345"
+        # Check model names are defined
+        assert "Claude" in MODEL_NAMES, "Missing Claude model"
+        assert "OpenAI" in MODEL_NAMES, "Missing OpenAI model"
+        assert "Gemini" in MODEL_NAMES, "Missing Gemini model"
+        print("✓ All model names defined")
 
-        claude = ClaudeProvider(dummy_key)
-        print(f"✓ Claude Provider initialized (model: {claude.get_model_name()})")
+        # Check MCP detection works
+        mcp_available = can_use_mcp()
+        print(f"✓ MCP detection: {'available' if mcp_available else 'not available'}")
 
-        openai = OpenAIProvider(dummy_key)
-        print(f"✓ OpenAI Provider initialized (model: {openai.get_model_name()})")
-
-        gemini = GeminiProvider(dummy_key)
-        print(f"✓ Gemini Provider initialized (model: {gemini.get_model_name()})")
-
-        print("\nAll providers initialized successfully!")
+        print("\nPydanticAI service configuration valid!")
         return True
 
     except Exception as e:
-        print(f"✗ Provider initialization failed: {e}")
+        print(f"✗ PydanticAI service test failed: {e}")
+        return False
+
+
+def test_direct_tools():
+    """Test that direct Telegraph tools are properly defined."""
+    print("\nTesting direct Telegraph tools...")
+
+    try:
+        from services.direct_telegraph_tools import DirectTelegraphTools, TELEGRAPH_TOOLS
+
+        # Check tools are defined
+        tool_names = [t["name"] for t in TELEGRAPH_TOOLS]
+        expected_tools = ["create_page", "edit_page", "get_page", "get_page_list", "get_account_info", "get_views"]
+
+        for tool in expected_tools:
+            assert tool in tool_names, f"Missing tool: {tool}"
+            print(f"✓ Tool defined: {tool}")
+
+        print("\nDirect Telegraph tools valid!")
+        return True
+
+    except Exception as e:
+        print(f"✗ Direct tools test failed: {e}")
         return False
 
 
 def main():
     """Run all tests."""
     print("=" * 60)
-    print("AI Chat Component Test Suite")
+    print("AI Chat Component Test Suite (PydanticAI)")
     print("=" * 60)
 
     results = []
 
     results.append(("Imports", test_imports()))
     results.append(("Component Structure", test_component_structure()))
-    results.append(("Provider Initialization", test_provider_initialization()))
+    results.append(("PydanticAI Service", test_pydantic_ai_service()))
+    results.append(("Direct Tools", test_direct_tools()))
 
     print("\n" + "=" * 60)
     print("Test Results Summary")

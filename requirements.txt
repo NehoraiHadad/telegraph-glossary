@@ -4,10 +4,6 @@ requests>=2.28.0
 markdown>=3.4.0
 bleach>=6.0.0
 
-# MCP Client for telegraph-mcp integration
-mcp>=1.0.0
-
-# AI Provider dependencies
-anthropic>=0.30.0
-openai>=1.30.0
-google-genai>=1.0.0
+# PydanticAI - unified AI provider with MCP support
+# Includes: anthropic, openai, google-genai, mcp
+pydantic-ai>=0.0.49
