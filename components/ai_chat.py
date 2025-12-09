@@ -14,12 +14,8 @@ import streamlit as st
 import logging
 import json
 
-from services.pydantic_ai_service import (
-    TelegraphAIService,
-    can_use_mcp,
-    StreamEvent,
-    EventType,
-)
+from services.pydantic_ai_service import TelegraphAIService, can_use_mcp
+from services.stream_types import StreamEvent, EventType
 from services.user_settings_manager import UserSettingsManager
 
 logger = logging.getLogger(__name__)

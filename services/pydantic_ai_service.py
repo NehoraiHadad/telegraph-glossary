@@ -25,10 +25,10 @@ from pydantic_ai import (
     FunctionToolCallEvent,
     FunctionToolResultEvent,
     PartDeltaEvent,
-    PartStartEvent,
     TextPartDelta,
 )
-from enum import Enum
+
+from services.stream_types import StreamEvent, EventType
 
 logger = logging.getLogger(__name__)
 
@@ -55,29 +55,6 @@ class GlossaryContext:
     author_name: str = "Telegraph Glossary"
 
 
-class EventType(str, Enum):
-    """Types of streaming events for UI consumption."""
-    TOOL_CALL = "tool_call"
-    TOOL_RESULT = "tool_result"
-    TEXT = "text"
-    TEXT_DELTA = "text_delta"
-    DONE = "done"
-    ERROR = "error"
-
-
-@dataclass
-class StreamEvent:
-    """
-    Structured event for UI consumption during streaming.
-
-    Attributes:
-        type: The type of event (tool_call, tool_result, text, etc.)
-        data: Event-specific data
-    """
-    type: EventType
-    data: Dict[str, Any]
-
-
 def can_use_mcp() -> bool:
     """Check if MCP is available (npx installed)."""
     return shutil.which("npx") is not None
@@ -91,7 +68,7 @@ class TelegraphAIService:
     - Automatic provider selection (Claude, OpenAI, Gemini)
     - MCPServerStdio integration for Telegraph tools
     - Fallback to direct Python tools when npx unavailable
-    - Async-to-sync streaming adapter for Streamlit
+    - Event-based streaming for Streamlit integration
 
     Example:
         ```python
@@ -102,9 +79,10 @@ class TelegraphAIService:
             glossary={"API": {...}}
         )
 
-        # Streaming response
-        for chunk in service.chat_stream("Create a page about Python"):
-            print(chunk, end="")
+        # Streaming with events
+        for event in service.chat_stream_with_events("Create a page about Python"):
+            if event.type == EventType.TEXT_DELTA:
+                print(event.data["delta"], end="")
         ```
     """
 
@@ -137,9 +115,6 @@ class TelegraphAIService:
 
         # Build system prompt
         self.system_prompt = self._build_system_prompt()
-
-        # MCP server instance (will be used as context manager)
-        self._mcp_server: Optional[MCPServerStdio] = None
 
         logger.info(f"TelegraphAIService initialized: provider={provider}, use_mcp={self.use_mcp}")
 
@@ -296,26 +271,6 @@ Always confirm what action you took after using a tool."""
         result = agent.run_sync(prompt)
         return result.output
 
-    def chat_stream(self, prompt: str, message_history: Optional[List[Dict]] = None) -> Generator[str, None, None]:
-        """
-        Get a streaming response from the AI.
-
-        Args:
-            prompt: User's message
-            message_history: Optional conversation history
-
-        Yields:
-            Text chunks as they arrive
-        """
-        try:
-            if self.use_mcp:
-                yield from self._stream_with_mcp(prompt, message_history)
-            else:
-                yield from self._stream_with_direct_tools(prompt, message_history)
-        except Exception as e:
-            logger.error(f"Error in chat_stream: {e}", exc_info=True)
-            yield f"Error: {str(e)}"
-
     def chat_stream_with_events(
         self, prompt: str, message_history: Optional[List[Dict]] = None
     ) -> Generator[StreamEvent, None, None]:
@@ -336,21 +291,10 @@ Always confirm what action you took after using a tool."""
             StreamEvent objects for UI consumption
         """
         try:
-            if self.use_mcp:
-                yield from self._stream_events_with_mcp(prompt)
-            else:
-                yield from self._stream_events_with_direct_tools(prompt)
+            yield from self._run_event_streaming_in_thread(prompt, self.use_mcp)
         except Exception as e:
             logger.error(f"Error in chat_stream_with_events: {e}", exc_info=True)
             yield StreamEvent(type=EventType.ERROR, data={"message": str(e)})
-
-    def _stream_events_with_mcp(self, prompt: str) -> Generator[StreamEvent, None, None]:
-        """Stream events using MCP server."""
-        yield from self._run_event_streaming_in_thread(prompt, use_mcp=True)
-
-    def _stream_events_with_direct_tools(self, prompt: str) -> Generator[StreamEvent, None, None]:
-        """Stream events using direct Python tools."""
-        yield from self._run_event_streaming_in_thread(prompt, use_mcp=False)
 
     def _run_event_streaming_in_thread(self, prompt: str, use_mcp: bool) -> Generator[StreamEvent, None, None]:
         """
@@ -482,75 +426,6 @@ Always confirm what action you took after using a tool."""
             )
 
         return None
-
-    def _stream_with_mcp(self, prompt: str, message_history: Optional[List[Dict]] = None) -> Generator[str, None, None]:
-        """Stream response using MCP server."""
-        yield from self._run_streaming_in_thread(prompt, use_mcp=True)
-
-    def _stream_with_direct_tools(self, prompt: str, message_history: Optional[List[Dict]] = None) -> Generator[str, None, None]:
-        """Stream response using direct Python tools."""
-        yield from self._run_streaming_in_thread(prompt, use_mcp=False)
-
-    def _run_streaming_in_thread(self, prompt: str, use_mcp: bool) -> Generator[str, None, None]:
-        """
-        Run async streaming in a separate thread to avoid event loop issues.
-
-        Uses a thread-safe queue to pass chunks from async context to sync generator.
-        """
-        chunk_queue: queue.Queue = queue.Queue()
-        error_holder: List[Optional[Exception]] = [None]
-
-        def run_async():
-            """Run the async streaming in a new event loop in this thread."""
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-            try:
-                loop.run_until_complete(self._async_stream_to_queue(prompt, chunk_queue, use_mcp))
-            except Exception as e:
-                error_holder[0] = e
-                chunk_queue.put(None)  # Signal end
-            finally:
-                loop.close()
-
-        # Start async streaming in a separate thread
-        thread = threading.Thread(target=run_async, daemon=True)
-        thread.start()
-
-        # Yield chunks as they arrive
-        while True:
-            try:
-                chunk = chunk_queue.get(timeout=60)  # 60 second timeout
-                if chunk is None:  # End signal
-                    break
-                yield chunk
-            except queue.Empty:
-                yield "Error: Streaming timeout"
-                break
-
-        # Wait for thread to finish
-        thread.join(timeout=5)
-
-        # Check for errors
-        if error_holder[0]:
-            yield f"Error: {str(error_holder[0])}"
-
-    async def _async_stream_to_queue(self, prompt: str, chunk_queue: queue.Queue, use_mcp: bool) -> None:
-        """Async method that streams response and puts chunks in queue."""
-        try:
-            if use_mcp:
-                mcp_server = self._create_mcp_server()
-                async with mcp_server:
-                    agent = self._create_agent_with_mcp(mcp_server)
-                    async with agent.run_stream(prompt) as result:
-                        async for chunk in result.stream_text():
-                            chunk_queue.put(chunk)
-            else:
-                agent = self._create_agent_with_direct_tools()
-                async with agent.run_stream(prompt) as result:
-                    async for chunk in result.stream_text():
-                        chunk_queue.put(chunk)
-        finally:
-            chunk_queue.put(None)  # Signal end of stream
 
     def _run_async(self, coro) -> Any:
         """Run an async coroutine synchronously."""
