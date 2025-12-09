@@ -301,21 +301,38 @@ Always confirm what action you took after using a tool."""
         Run async event streaming in a separate thread.
 
         Uses a thread-safe queue to pass StreamEvent objects from async context to sync generator.
+        Each call creates a fresh thread with a new, independent event loop.
         """
         event_queue: queue.Queue = queue.Queue()
         error_holder: List[Optional[Exception]] = [None]
 
         def run_async():
             """Run the async event streaming in a new event loop."""
+            # Create a fresh event loop for this thread
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
             try:
                 loop.run_until_complete(self._async_events_to_queue(prompt, event_queue, use_mcp))
             except Exception as e:
+                logger.error(f"Error in event streaming thread: {e}", exc_info=True)
                 error_holder[0] = e
                 event_queue.put(None)  # Signal end
             finally:
-                loop.close()
+                # Proper cleanup: close loop and clear from thread
+                try:
+                    # Cancel all pending tasks
+                    pending = asyncio.all_tasks(loop)
+                    for task in pending:
+                        task.cancel()
+                    # Run loop one final time to process cancellations
+                    if pending:
+                        loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
+                except Exception as cleanup_error:
+                    logger.warning(f"Error during loop cleanup: {cleanup_error}")
+                finally:
+                    loop.close()
+                    # Clear the event loop from this thread to prevent reuse of closed loop
+                    asyncio.set_event_loop(None)
 
         # Start async streaming in a separate thread
         thread = threading.Thread(target=run_async, daemon=True)
@@ -428,13 +445,26 @@ Always confirm what action you took after using a tool."""
         return None
 
     def _run_async(self, coro) -> Any:
-        """Run an async coroutine synchronously."""
+        """Run an async coroutine synchronously with proper cleanup."""
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
         try:
             return loop.run_until_complete(coro)
         finally:
-            loop.close()
+            try:
+                # Cancel any remaining tasks
+                pending = asyncio.all_tasks(loop)
+                for task in pending:
+                    task.cancel()
+                # Process cancellations
+                if pending:
+                    loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
+            except Exception as e:
+                logger.warning(f"Error during async cleanup: {e}")
+            finally:
+                loop.close()
+                # Clear the event loop from this thread
+                asyncio.set_event_loop(None)
 
     def get_tools_info(self) -> List[Dict[str, str]]:
         """
