@@ -22,11 +22,11 @@ from pydantic_ai.mcp import MCPServerStdio
 
 logger = logging.getLogger(__name__)
 
-# Model name mappings for PydanticAI (using smarter models)
+# Model name mappings for PydanticAI (December 2025 - latest models)
 MODEL_NAMES = {
-    "Claude": "anthropic:claude-sonnet-4-20250514",
-    "OpenAI": "openai:gpt-4o",
-    "Gemini": "google-gla:gemini-2.5-pro",  # Pro is smarter than Flash
+    "Claude": "anthropic:claude-opus-4-5-20251101",  # Opus 4.5 - smartest Claude
+    "OpenAI": "openai:gpt-5.1",  # GPT-5.1 - released Nov 2025
+    "Gemini": "google-gla:gemini-3-pro",  # Gemini 3 Pro - released Nov 2025
 }
 
 # Environment variable names for API keys
