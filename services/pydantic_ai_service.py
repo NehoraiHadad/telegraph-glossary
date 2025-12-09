@@ -172,8 +172,8 @@ Always confirm what action you took after using a tool."""
             system_prompt=self.system_prompt,
         )
 
-        # Register tools using decorators
-        @agent.tool
+        # Register tools using tool_plain (no RunContext needed)
+        @agent.tool_plain
         def create_page(title: str, content: str, author_name: str = "Telegraph Glossary") -> Dict[str, Any]:
             """Create a new Telegraph page with the given title and content."""
             return direct_tools.call_tool_sync("create_page", {
@@ -182,7 +182,7 @@ Always confirm what action you took after using a tool."""
                 "author_name": author_name
             })
 
-        @agent.tool
+        @agent.tool_plain
         def edit_page(path: str, title: str, content: str, author_name: str = "Telegraph Glossary") -> Dict[str, Any]:
             """Edit an existing Telegraph page."""
             return direct_tools.call_tool_sync("edit_page", {
@@ -192,12 +192,12 @@ Always confirm what action you took after using a tool."""
                 "author_name": author_name
             })
 
-        @agent.tool
+        @agent.tool_plain
         def get_page(path: str) -> Dict[str, Any]:
             """Get the content of an existing Telegraph page."""
             return direct_tools.call_tool_sync("get_page", {"path": path})
 
-        @agent.tool
+        @agent.tool_plain
         def get_page_list(limit: int = 50, offset: int = 0) -> Dict[str, Any]:
             """Get a list of pages in the current Telegraph account."""
             return direct_tools.call_tool_sync("get_page_list", {
@@ -205,12 +205,12 @@ Always confirm what action you took after using a tool."""
                 "offset": offset
             })
 
-        @agent.tool
+        @agent.tool_plain
         def get_account_info() -> Dict[str, Any]:
             """Get information about the current Telegraph account."""
             return direct_tools.call_tool_sync("get_account_info", {})
 
-        @agent.tool
+        @agent.tool_plain
         def get_views(path: str, year: Optional[int] = None, month: Optional[int] = None, day: Optional[int] = None) -> Dict[str, Any]:
             """Get the number of views for a Telegraph page."""
             args = {"path": path}
