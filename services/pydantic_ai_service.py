@@ -12,6 +12,8 @@ import asyncio
 import os
 import shutil
 import logging
+import threading
+import queue
 from typing import Generator, Dict, Any, Optional, List
 from dataclasses import dataclass
 
@@ -283,25 +285,72 @@ Always confirm what action you took after using a tool."""
 
     def _stream_with_mcp(self, prompt: str, message_history: Optional[List[Dict]] = None) -> Generator[str, None, None]:
         """Stream response using MCP server."""
-        async def async_stream():
-            mcp_server = self._create_mcp_server()
-            async with mcp_server:
-                agent = self._create_agent_with_mcp(mcp_server)
-                async with agent.run_stream(prompt) as result:
-                    async for chunk in result.stream_text():
-                        yield chunk
-
-        yield from self._run_async_generator(async_stream())
+        yield from self._run_streaming_in_thread(prompt, use_mcp=True)
 
     def _stream_with_direct_tools(self, prompt: str, message_history: Optional[List[Dict]] = None) -> Generator[str, None, None]:
         """Stream response using direct Python tools."""
-        async def async_stream():
-            agent = self._create_agent_with_direct_tools()
-            async with agent.run_stream(prompt) as result:
-                async for chunk in result.stream_text():
-                    yield chunk
+        yield from self._run_streaming_in_thread(prompt, use_mcp=False)
 
-        yield from self._run_async_generator(async_stream())
+    def _run_streaming_in_thread(self, prompt: str, use_mcp: bool) -> Generator[str, None, None]:
+        """
+        Run async streaming in a separate thread to avoid event loop issues.
+
+        Uses a thread-safe queue to pass chunks from async context to sync generator.
+        """
+        chunk_queue: queue.Queue = queue.Queue()
+        error_holder: List[Optional[Exception]] = [None]
+
+        def run_async():
+            """Run the async streaming in a new event loop in this thread."""
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            try:
+                loop.run_until_complete(self._async_stream_to_queue(prompt, chunk_queue, use_mcp))
+            except Exception as e:
+                error_holder[0] = e
+                chunk_queue.put(None)  # Signal end
+            finally:
+                loop.close()
+
+        # Start async streaming in a separate thread
+        thread = threading.Thread(target=run_async, daemon=True)
+        thread.start()
+
+        # Yield chunks as they arrive
+        while True:
+            try:
+                chunk = chunk_queue.get(timeout=60)  # 60 second timeout
+                if chunk is None:  # End signal
+                    break
+                yield chunk
+            except queue.Empty:
+                yield "Error: Streaming timeout"
+                break
+
+        # Wait for thread to finish
+        thread.join(timeout=5)
+
+        # Check for errors
+        if error_holder[0]:
+            yield f"Error: {str(error_holder[0])}"
+
+    async def _async_stream_to_queue(self, prompt: str, chunk_queue: queue.Queue, use_mcp: bool) -> None:
+        """Async method that streams response and puts chunks in queue."""
+        try:
+            if use_mcp:
+                mcp_server = self._create_mcp_server()
+                async with mcp_server:
+                    agent = self._create_agent_with_mcp(mcp_server)
+                    async with agent.run_stream(prompt) as result:
+                        async for chunk in result.stream_text():
+                            chunk_queue.put(chunk)
+            else:
+                agent = self._create_agent_with_direct_tools()
+                async with agent.run_stream(prompt) as result:
+                    async for chunk in result.stream_text():
+                        chunk_queue.put(chunk)
+        finally:
+            chunk_queue.put(None)  # Signal end of stream
 
     def _run_async(self, coro) -> Any:
         """Run an async coroutine synchronously."""
@@ -309,30 +358,6 @@ Always confirm what action you took after using a tool."""
         asyncio.set_event_loop(loop)
         try:
             return loop.run_until_complete(coro)
-        finally:
-            loop.close()
-
-    def _run_async_generator(self, async_gen) -> Generator[str, None, None]:
-        """
-        Convert async generator to sync generator for Streamlit.
-
-        This adapter allows Streamlit (which is synchronous) to consume
-        PydanticAI's async streaming responses.
-        """
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        try:
-            # Get the async iterator
-            ait = async_gen.__aiter__()
-            while True:
-                try:
-                    chunk = loop.run_until_complete(ait.__anext__())
-                    yield chunk
-                except StopAsyncIteration:
-                    break
-        except Exception as e:
-            logger.error(f"Error in async generator: {e}", exc_info=True)
-            yield f"Error during streaming: {str(e)}"
         finally:
             loop.close()
 
