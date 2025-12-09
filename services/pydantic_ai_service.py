@@ -17,6 +17,10 @@ import queue
 from typing import Generator, Dict, Any, Optional, List
 from dataclasses import dataclass
 
+# Apply nest_asyncio to allow nested event loops (required for Streamlit + PydanticAI)
+import nest_asyncio
+nest_asyncio.apply()
+
 from pydantic_ai import Agent
 from pydantic_ai.mcp import MCPServerStdio
 from pydantic_ai import (
@@ -298,41 +302,21 @@ Always confirm what action you took after using a tool."""
 
     def _run_event_streaming_in_thread(self, prompt: str, use_mcp: bool) -> Generator[StreamEvent, None, None]:
         """
-        Run async event streaming in a separate thread.
+        Run async event streaming with queue-based communication.
 
-        Uses a thread-safe queue to pass StreamEvent objects from async context to sync generator.
-        Each call creates a fresh thread with a new, independent event loop.
+        Uses nest_asyncio to allow running async code from sync context in Streamlit.
         """
         event_queue: queue.Queue = queue.Queue()
-        error_holder: List[Optional[Exception]] = [None]
 
         def run_async():
-            """Run the async event streaming in a new event loop."""
-            # Create a fresh event loop for this thread
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
+            """Run the async event streaming."""
             try:
-                loop.run_until_complete(self._async_events_to_queue(prompt, event_queue, use_mcp))
+                # With nest_asyncio, we can safely use asyncio.run()
+                asyncio.run(self._async_events_to_queue(prompt, event_queue, use_mcp))
             except Exception as e:
-                logger.error(f"Error in event streaming thread: {e}", exc_info=True)
-                error_holder[0] = e
-                event_queue.put(None)  # Signal end
-            finally:
-                # Proper cleanup: close loop and clear from thread
-                try:
-                    # Cancel all pending tasks
-                    pending = asyncio.all_tasks(loop)
-                    for task in pending:
-                        task.cancel()
-                    # Run loop one final time to process cancellations
-                    if pending:
-                        loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
-                except Exception as cleanup_error:
-                    logger.warning(f"Error during loop cleanup: {cleanup_error}")
-                finally:
-                    loop.close()
-                    # Clear the event loop from this thread to prevent reuse of closed loop
-                    asyncio.set_event_loop(None)
+                logger.error(f"Error in event streaming: {e}", exc_info=True)
+                event_queue.put(StreamEvent(type=EventType.ERROR, data={"message": str(e)}))
+                event_queue.put(None)
 
         # Start async streaming in a separate thread
         thread = threading.Thread(target=run_async, daemon=True)
@@ -352,29 +336,16 @@ Always confirm what action you took after using a tool."""
         # Wait for thread to finish
         thread.join(timeout=5)
 
-        # Check for errors
-        if error_holder[0]:
-            yield StreamEvent(type=EventType.ERROR, data={"message": str(error_holder[0])})
-
     async def _async_events_to_queue(self, prompt: str, event_queue: queue.Queue, use_mcp: bool) -> None:
         """Async method that processes events and puts StreamEvents in queue."""
         full_text = ""
-
-        async def event_handler(ctx, event_stream):
-            """Handle tool events from the agent stream (not text - that's handled separately)."""
-            async for event in event_stream:
-                # Only process tool-related events, skip text (handled by stream_text)
-                if isinstance(event, (FunctionToolCallEvent, FunctionToolResultEvent)):
-                    stream_event = self._process_agent_event(event, "")
-                    if stream_event:
-                        event_queue.put(stream_event)
 
         try:
             if use_mcp:
                 mcp_server = self._create_mcp_server()
                 async with mcp_server:
                     agent = self._create_agent_with_mcp(mcp_server)
-                    async with agent.run_stream(prompt, event_stream_handler=event_handler) as result:
+                    async with agent.run_stream(prompt) as result:
                         async for chunk in result.stream_text():
                             full_text += chunk
                             event_queue.put(StreamEvent(
@@ -383,7 +354,7 @@ Always confirm what action you took after using a tool."""
                             ))
             else:
                 agent = self._create_agent_with_direct_tools()
-                async with agent.run_stream(prompt, event_stream_handler=event_handler) as result:
+                async with agent.run_stream(prompt) as result:
                     async for chunk in result.stream_text():
                         full_text += chunk
                         event_queue.put(StreamEvent(
@@ -445,26 +416,8 @@ Always confirm what action you took after using a tool."""
         return None
 
     def _run_async(self, coro) -> Any:
-        """Run an async coroutine synchronously with proper cleanup."""
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        try:
-            return loop.run_until_complete(coro)
-        finally:
-            try:
-                # Cancel any remaining tasks
-                pending = asyncio.all_tasks(loop)
-                for task in pending:
-                    task.cancel()
-                # Process cancellations
-                if pending:
-                    loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
-            except Exception as e:
-                logger.warning(f"Error during async cleanup: {e}")
-            finally:
-                loop.close()
-                # Clear the event loop from this thread
-                asyncio.set_event_loop(None)
+        """Run an async coroutine synchronously using nest_asyncio."""
+        return asyncio.run(coro)
 
     def get_tools_info(self) -> List[Dict[str, str]]:
         """

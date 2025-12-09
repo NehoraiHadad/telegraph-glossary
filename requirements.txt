@@ -7,3 +7,6 @@ bleach>=6.0.0
 # PydanticAI - unified AI provider with MCP support
 # Includes: anthropic, openai, google-genai, mcp
 pydantic-ai>=0.0.49
+
+# Async support for Streamlit
+nest-asyncio>=1.5.0
