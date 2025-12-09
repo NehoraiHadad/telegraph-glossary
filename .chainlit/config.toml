@@ -1,0 +1,18 @@
+[project]
+name = "Telegraph Glossary"
+enable_telemetry = false
+
+[UI]
+name = "Telegraph Glossary"
+default_theme = "dark"
+hide_cot = true
+
+[features]
+prompt_playground = false
+unsafe_allow_html = true
+
+[features.spontaneous_file_upload]
+enabled = false
+
+[meta]
+generated_by = "chainlit"

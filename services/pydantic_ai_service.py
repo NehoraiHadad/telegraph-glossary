@@ -399,28 +399,43 @@ Always confirm what action you took after using a tool."""
         """Async method that processes events and puts StreamEvents in queue."""
         full_text = ""
 
+        async def event_handler(ctx, event_stream):
+            """Handle tool events from the agent stream (not text - that's handled separately)."""
+            async for event in event_stream:
+                # Only process tool-related events, skip text (handled by stream_text)
+                if isinstance(event, (FunctionToolCallEvent, FunctionToolResultEvent)):
+                    stream_event = self._process_agent_event(event, "")
+                    if stream_event:
+                        event_queue.put(stream_event)
+
         try:
             if use_mcp:
                 mcp_server = self._create_mcp_server()
                 async with mcp_server:
                     agent = self._create_agent_with_mcp(mcp_server)
-                    async for event in agent.run_stream_events(prompt):
-                        stream_event = self._process_agent_event(event, full_text)
-                        if stream_event:
-                            if stream_event.type == EventType.TEXT_DELTA:
-                                full_text += stream_event.data.get("delta", "")
-                            event_queue.put(stream_event)
+                    async with agent.run_stream(prompt, event_stream_handler=event_handler) as result:
+                        async for chunk in result.stream_text():
+                            full_text += chunk
+                            event_queue.put(StreamEvent(
+                                type=EventType.TEXT_DELTA,
+                                data={"delta": chunk}
+                            ))
             else:
                 agent = self._create_agent_with_direct_tools()
-                async for event in agent.run_stream_events(prompt):
-                    stream_event = self._process_agent_event(event, full_text)
-                    if stream_event:
-                        if stream_event.type == EventType.TEXT_DELTA:
-                            full_text += stream_event.data.get("delta", "")
-                        event_queue.put(stream_event)
+                async with agent.run_stream(prompt, event_stream_handler=event_handler) as result:
+                    async for chunk in result.stream_text():
+                        full_text += chunk
+                        event_queue.put(StreamEvent(
+                            type=EventType.TEXT_DELTA,
+                            data={"delta": chunk}
+                        ))
 
-            # Send final done event with complete text
+            # Send final done event
             event_queue.put(StreamEvent(type=EventType.DONE, data={"text": full_text}))
+
+        except Exception as e:
+            logger.error(f"Error in async events: {e}", exc_info=True)
+            event_queue.put(StreamEvent(type=EventType.ERROR, data={"message": str(e)}))
 
         finally:
             event_queue.put(None)  # Signal end of stream
