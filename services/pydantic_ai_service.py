@@ -26,7 +26,7 @@ logger = logging.getLogger(__name__)
 MODEL_NAMES = {
     "Claude": "anthropic:claude-opus-4-5-20251101",  # Opus 4.5 - smartest Claude
     "OpenAI": "openai:gpt-5.1",  # GPT-5.1 - released Nov 2025
-    "Gemini": "google-gla:gemini-3-pro-preview",  # Gemini 3 Pro Preview
+    "Gemini": "google-gla:gemini-2.5-flash",  # Has free tier (gemini-3-pro requires paid plan)
 }
 
 # Environment variable names for API keys
