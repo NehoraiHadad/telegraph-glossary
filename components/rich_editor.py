@@ -10,6 +10,22 @@ import streamlit as st
 from services.content_converter import ContentConverter
 
 
+# Formatting snippets: (prefix, suffix, placeholder)
+FORMATTING_SNIPPETS = {
+    "bold": ("**", "**", "text"),
+    "italic": ("*", "*", "text"),
+    "underline": ("<u>", "</u>", "text"),
+    "strikethrough": ("~~", "~~", "text"),
+    "h3": ("\n### ", "\n", "Heading"),
+    "h4": ("\n#### ", "\n", "Subheading"),
+    "bullet": ("\n- ", "", "item"),
+    "numbered": ("\n1. ", "", "item"),
+    "quote": ("\n> ", "\n", "quote"),
+    "code": ("`", "`", "code"),
+    "hr": ("\n---\n", "", ""),
+}
+
+
 def render_rich_editor(
     key: str,
     initial_content: str = "",
@@ -45,6 +61,15 @@ def render_rich_editor(
         else:
             st.session_state[state_key_content] = initial_content
 
+    # Render help guide at top
+    _render_help_guide()
+
+    # Render formatting toolbar
+    _render_formatting_toolbar(key, state_key_content)
+
+    # Render link form (conditional - shows when link button clicked)
+    _render_link_form(key, state_key_content)
+
     # Render image insertion section
     _render_image_inserter(key, state_key_content)
 
@@ -54,6 +79,139 @@ def render_rich_editor(
     )
 
     return html_content, raw_content
+
+
+def _render_help_guide() -> None:
+    """Render formatting help guide in an expander."""
+    with st.expander("Formatting Help", expanded=False):
+        st.markdown("""
+### Supported Formatting
+
+| Format | Syntax | Result |
+|--------|--------|--------|
+| **Bold** | `**text**` | **bold** |
+| *Italic* | `*text*` | *italic* |
+| Underline | `<u>text</u>` | underlined |
+| ~~Strike~~ | `~~text~~` | ~~crossed out~~ |
+| Link | `[text](url)` | clickable link |
+
+### Headings
+- `### Heading 3` - Large heading
+- `#### Heading 4` - Smaller heading
+
+### Lists
+```
+- Bullet item
+- Another item
+
+1. Numbered item
+2. Another item
+```
+
+### Code
+- Inline: `` `code` ``
+- Block: ` ``` code ``` `
+
+### Other
+- Blockquote: `> quoted text`
+- Horizontal line: `---`
+
+---
+
+### What Telegraph Does NOT Support
+- **H1, H2 headings** - use H3 or H4 instead
+- **Tables** - use lists instead
+- **Custom colors/fonts** - no CSS styling
+- **Nested lists** - keep lists flat
+        """)
+
+
+def _render_formatting_toolbar(key: str, state_key_content: str) -> None:
+    """Render formatting buttons above the editor."""
+    cols = st.columns([1, 1, 1, 1, 1.5, 0.3, 1, 1, 0.3, 1, 1, 0.3, 1, 1, 1])
+
+    buttons = [
+        (0, "B", "bold", "Bold **text**"),
+        (1, "I", "italic", "Italic *text*"),
+        (2, "U", "underline", "Underline"),
+        (3, "S", "strikethrough", "Strikethrough ~~text~~"),
+        (4, "Link", "link", "Insert link"),
+        # gap at 5
+        (6, "H3", "h3", "Heading 3"),
+        (7, "H4", "h4", "Heading 4"),
+        # gap at 8
+        (9, "•", "bullet", "Bullet list"),
+        (10, "1.", "numbered", "Numbered list"),
+        # gap at 11
+        (12, ">", "quote", "Blockquote"),
+        (13, "`", "code", "Inline code"),
+        (14, "—", "hr", "Horizontal line"),
+    ]
+
+    for col_idx, label, fmt_type, tooltip in buttons:
+        with cols[col_idx]:
+            if st.button(label, key=f"{key}_fmt_{fmt_type}", help=tooltip, use_container_width=True):
+                if fmt_type == "link":
+                    st.session_state[f"{key}_show_link_form"] = True
+                    st.rerun()
+                else:
+                    _insert_format(key, state_key_content, fmt_type)
+
+
+def _insert_format(key: str, state_key_content: str, format_type: str) -> None:
+    """Insert formatting snippet at end of content."""
+    prefix, suffix, placeholder = FORMATTING_SNIPPETS[format_type]
+    snippet = f"{prefix}{placeholder}{suffix}"
+
+    current = st.session_state.get(state_key_content, "")
+    new_content = current + snippet
+
+    # Update content state
+    st.session_state[state_key_content] = new_content
+
+    # Sync with text_area widget keys
+    for widget_suffix in ["_markdown_textarea", "_markdown_textarea_full"]:
+        widget_key = f"{key}{widget_suffix}"
+        if widget_key in st.session_state:
+            st.session_state[widget_key] = new_content
+
+    st.rerun()
+
+
+def _render_link_form(key: str, state_key_content: str) -> None:
+    """Render link insertion form when triggered."""
+    if not st.session_state.get(f"{key}_show_link_form"):
+        return
+
+    with st.container():
+        st.markdown("**Insert Link**")
+        col1, col2 = st.columns(2)
+        with col1:
+            link_text = st.text_input("Link Text", key=f"{key}_link_text", placeholder="Click here")
+        with col2:
+            link_url = st.text_input("URL", key=f"{key}_link_url", placeholder="https://...")
+
+        col1, col2, _ = st.columns([1, 1, 2])
+        with col1:
+            if st.button("Insert", key=f"{key}_link_insert", type="primary"):
+                if link_text and link_url:
+                    link_md = f"[{link_text}]({link_url})"
+                    current = st.session_state.get(state_key_content, "")
+                    new_content = current + link_md
+                    st.session_state[state_key_content] = new_content
+                    # Sync widget keys
+                    for widget_suffix in ["_markdown_textarea", "_markdown_textarea_full"]:
+                        widget_key = f"{key}{widget_suffix}"
+                        if widget_key in st.session_state:
+                            st.session_state[widget_key] = new_content
+                    st.session_state[f"{key}_show_link_form"] = False
+                    st.rerun()
+                else:
+                    st.warning("Enter both text and URL")
+        with col2:
+            if st.button("Cancel", key=f"{key}_link_cancel"):
+                st.session_state[f"{key}_show_link_form"] = False
+                st.rerun()
 
 
 def _render_markdown_editor(
