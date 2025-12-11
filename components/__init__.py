@@ -3,6 +3,7 @@ from .text_processor import render_text_processor
 from .settings_panel import render_settings
 from .ai_integration import render_ai_integration
 from .ai_chat import render_ai_chat
+from .help_guide import show_help_dialog
 
 __all__ = [
     "render_glossary_manager",
@@ -10,4 +11,5 @@ __all__ = [
     "render_settings",
     "render_ai_integration",
     "render_ai_chat",
+    "show_help_dialog",
 ]

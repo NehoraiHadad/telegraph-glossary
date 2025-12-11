@@ -9,6 +9,7 @@ from components.glossary_manager import render_glossary_manager
 from components.text_processor import render_text_processor
 from components.settings_panel import render_settings
 from components.ai_integration import render_ai_integration
+from components.help_guide import show_help_dialog
 from utils.helpers import inject_custom_css, show_toast
 
 
@@ -66,7 +67,14 @@ def load_app() -> None:
 def render_sidebar() -> None:
     """Render the sidebar with status and quick actions."""
     with st.sidebar:
-        st.title("Telegraph Glossary")
+        # Header with title and help button
+        col1, col2 = st.columns([4, 1])
+        with col1:
+            st.title("Telegraph Glossary")
+        with col2:
+            st.write("")  # Spacer for alignment
+            if st.button("?", help="Open User Guide", use_container_width=True):
+                show_help_dialog()
 
         config = st.session_state.get("config", {})
         telegraph = st.session_state.get("telegraph")
