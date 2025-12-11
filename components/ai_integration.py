@@ -18,6 +18,7 @@ def render_ai_integration() -> None:
     chat_tab, config_tab = st.tabs(["AI Chat", "MCP Configuration"])
 
     with chat_tab:
+        st.info("This embedded chat feature is still in development.")
         st.markdown("Chat with AI to manage your glossary using natural language.")
         render_ai_chat()
 
