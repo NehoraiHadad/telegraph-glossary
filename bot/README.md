@@ -9,8 +9,9 @@ updates the originals.
 The bot never sees anyone's Telegraph key. Glossaries are public pages, so all it stores is
 *which channel uses which glossary*.
 
-The bot speaks Hebrew or English. It follows the Telegram app language until the user picks
-one (buttons on Start, or `/language`).
+The bot speaks Hebrew or English. Connecting from the web app sets the web app's language;
+otherwise it follows the Telegram app language. The user can change it any time (buttons on
+Start, or `/language`).
 
 ## Deploy
 
@@ -48,7 +49,7 @@ Only `BOT_TOKEN` is needed: the webhook secret is derived from it.
 | `POST /telegram` | webhook (checks `X-Telegram-Bot-Api-Secret-Token`) |
 | `GET /setup` | registers the webhook and commands (`/status`, `/language`) |
 | `GET /api/info` | `{bot_username}` |
-| `POST /api/connect` | `{index_path}` → one-time `start_url` for the user |
+| `POST /api/connect` | `{index_path, lang?}` → one-time `start_url` for the user |
 | `GET /api/status?index=` | connected channels |
 | `POST /api/changed` | `{index_path}`: re-apply the glossary to remembered posts now |
 | cron `*/15` | catches glossary edits made elsewhere |

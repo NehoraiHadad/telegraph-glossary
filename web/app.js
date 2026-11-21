@@ -347,7 +347,7 @@ function viewChannel() {
       const win = window.open("about:blank", "_blank"); // open synchronously so popup blockers allow it
       busy(e.currentTarget, async () => {
         try {
-          const { start_url } = await botApi("/api/connect", { index_path: g.indexPath });
+          const { start_url } = await botApi("/api/connect", { index_path: g.indexPath, lang: state.lang });
           if (win) win.location.href = start_url; else location.href = start_url;
           state.waiting = true; render();
         } catch (err) { win?.close(); throw err; }

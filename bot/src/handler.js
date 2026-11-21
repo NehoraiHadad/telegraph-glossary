@@ -113,9 +113,10 @@ export function createBot(deps) {
   const addToChannelUrl = async () => `https://t.me/${await deps.username()}?startchannel&admin=edit_messages`;
 
   // ------------------------------------------------------------ binding
-  async function connectCode(path) {
+  /** `lang` is the web app's language: the bot then talks in it, unless the user picked another one. */
+  async function connectCode(path, lang) {
     const code = randomCode();
-    await kv.put(`code:${code}`, path, { ttl: CODE_TTL });
+    await kv.put(`code:${code}`, { path, lang: T[lang] ? lang : null }, { ttl: CODE_TTL });
     const bot = await deps.username();
     return { code, start_url: `https://t.me/${bot}?start=${code}`, bot_username: bot };
   }
@@ -265,12 +266,15 @@ export function createBot(deps) {
 
     const [cmd, arg] = (msg.text || "").trim().split(/\s+/, 2);
     if (cmd === "/start" && arg) {
-      const path = await kv.get(`code:${arg}`);
-      if (!path) return say(user.id, s.badCode);
+      const entry = await kv.get(`code:${arg}`);
+      if (!entry) return say(user.id, s.badCode);
+      const { path, lang } = typeof entry === "string" ? { path: entry } : entry; // codes made before lang was stored
       await kv.del(`code:${arg}`);
       await kv.put(`user:${user.id}`, path);
+      if (lang && !(await kv.get(`lang:${user.id}`))) await kv.put(`lang:${user.id}`, lang);
       const g = await glossary(path);
-      await say(user.id, s.linked(g.title), { reply_markup: { inline_keyboard: [[{ text: s.addBtn, url: await addToChannelUrl() }]] } });
+      const sl = await trU(user);
+      await say(user.id, sl.linked(g.title), { reply_markup: { inline_keyboard: [[{ text: sl.addBtn, url: await addToChannelUrl() }]] } });
       for (const c of (await kv.get(`pending:${user.id}`)) || []) await bindChannel(c, user, path);
       await kv.del(`pending:${user.id}`);
       return;

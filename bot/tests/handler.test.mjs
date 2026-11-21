@@ -131,6 +131,20 @@ test("strangers cannot edit someone else's channel by forwarding", async () => {
   assert.equal(edits(t.calls).length, 0);
 });
 
+test("connecting from the web app uses its language, unless the user already picked one", async () => {
+  const t = setup();
+  const { code } = await t.bot.connectCode("My-glossary-11-21", "he");
+  await t.bot.handleUpdate({ message: { chat: { id: 7, type: "private" }, from: user, text: `/start ${code}` } });
+  assert.match(t.calls.at(-1).params.text, /מחובר/);
+  assert.equal(t.calls.at(-1).params.reply_markup.inline_keyboard[0][0].text, "➕ הוספה לערוץ");
+  assert.equal(await t.kv.get("lang:7"), "he");
+
+  await t.kv.put("lang:8", "en");
+  const again = await t.bot.connectCode("My-glossary-11-21", "he");
+  await t.bot.handleUpdate({ message: { chat: { id: 8, type: "private" }, from: { id: 8, language_code: "he" }, text: `/start ${again.code}` } });
+  assert.match(t.calls.at(-1).params.text, /connected/);
+});
+
 test("channel added before /start is bound once the user connects", async () => {
   const t = setup();
   await t.bot.handleUpdate({ my_chat_member: { chat: channel, from: user, new_chat_member: { status: "administrator" } } });

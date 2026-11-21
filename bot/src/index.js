@@ -8,7 +8,7 @@
 //   GET  /setup                (re)registers the webhook to this Worker. Idempotent and safe
 //                              to call by anyone: it can only point the bot at itself.
 //   GET  /api/info             {bot_username}
-//   POST /api/connect          {index_path} -> {start_url}   (used by the web app)
+//   POST /api/connect          {index_path, lang?} -> {start_url}   (used by the web app)
 //   GET  /api/status?index=... -> {channels}
 //   POST /api/changed          {index_path}  glossary was edited: update old posts now
 // Cron: re-applies glossary changes made elsewhere (CLI, agents, telegra.ph).
@@ -117,10 +117,10 @@ export default {
     if (url.pathname === "/api/info") return json({ bot_username: await b.username() });
 
     if (url.pathname === "/api/connect" && request.method === "POST") {
-      const { index_path } = await request.json().catch(() => ({}));
+      const { index_path, lang } = await request.json().catch(() => ({}));
       if (!validPath(index_path)) return json({ error: "index_path required" }, 400);
       try { await b.glossary(index_path, true); } catch { return json({ error: "glossary not found" }, 404); }
-      return json(await b.connectCode(index_path));
+      return json(await b.connectCode(index_path, lang));
     }
 
     if (url.pathname === "/api/status") {
