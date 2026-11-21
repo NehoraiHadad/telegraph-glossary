@@ -9,6 +9,9 @@ updates the originals.
 The bot never sees anyone's Telegraph key. Glossaries are public pages, so all it stores is
 *which channel uses which glossary*.
 
+The bot speaks Hebrew or English. It follows the Telegram app language until the user picks
+one (buttons on Start, or `/language`).
+
 ## Deploy
 
 This is automatic from GitHub Actions (`.github/workflows/deploy.yml`) once the repo has the
@@ -39,7 +42,6 @@ Manual deploy: `cd bot && npm ci && npx wrangler deploy` (KV is provisioned auto
 
 ## Limits
 
-* The bot talks Hebrew or English: it follows the Telegram app language until the user picks one (buttons on Start, or `/language`).
 * Channels only. In groups, bots cannot edit other people's messages.
 * Bots can't read channel history, so posts from before the bot joined are updated only when forwarded.
 * Free plan: about 1,000 KV writes a day (about 2 per new post) and 50 outgoing requests per
