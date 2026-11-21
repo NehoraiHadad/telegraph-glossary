@@ -8,8 +8,15 @@ OUT=${OUT:-$(mktemp -d)}
 export OUT CALLS="$OUT/telegram-calls.ndjson"
 : > "$CALLS"
 pids=()
-cleanup() { kill "${pids[@]}" 2>/dev/null || true; }
-trap cleanup EXIT
+stop_all() {
+  kill "${pids[@]}" 2>/dev/null || true
+  pkill -f "wrangler dev --port 8787" 2>/dev/null || true
+  pkill -f "workerd serve" 2>/dev/null || true
+  pkill -f "e2e/mock-telegram.mjs" 2>/dev/null || true
+  pkill -f "http.server 8766" 2>/dev/null || true
+}
+stop_all; sleep 1 # leftovers from an interrupted run
+trap stop_all EXIT
 
 node "$ROOT/e2e/mock-telegram.mjs" "$CALLS" & pids+=($!)
 cp -r "$ROOT/web" "$OUT/site" && echo '{ "bot_api": "http://127.0.0.1:8787" }' > "$OUT/site/config.json"

@@ -15,7 +15,7 @@
 
 import { createBot } from "./handler.js";
 
-const ALLOWED_UPDATES = ["message", "channel_post", "edited_channel_post", "my_chat_member"];
+const ALLOWED_UPDATES = ["message", "channel_post", "edited_channel_post", "my_chat_member", "callback_query"];
 
 function kvAdapter(ns) {
   return {
@@ -103,8 +103,14 @@ export default {
       const tg = telegram(env);
       const me = await tg("getMe");
       await tg("setWebhook", { url: `${url.origin}/telegram`, secret_token: await webhookSecret(env), allowed_updates: ALLOWED_UPDATES });
-      await tg("setMyCommands", { commands: [{ command: "status", description: "Connected channels" }] });
-      await tg("setMyCommands", { commands: [{ command: "status", description: "ערוצים מחוברים" }], language_code: "he" });
+      await tg("setMyCommands", { commands: [
+        { command: "status", description: "Connected channels" },
+        { command: "language", description: "Language: English / עברית" },
+      ] });
+      await tg("setMyCommands", { language_code: "he", commands: [
+        { command: "status", description: "ערוצים מחוברים" },
+        { command: "language", description: "שפה: עברית / English" },
+      ] });
       return json({ ok: true, bot: me.username, webhook: `${url.origin}/telegram` });
     }
 

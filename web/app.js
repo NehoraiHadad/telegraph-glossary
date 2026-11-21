@@ -168,14 +168,17 @@ function renderWelcome() {
     form,
     h("p", { class: "fine" }, t("free")),
     h("div", { class: "alt" }, h("button", { class: "textlink", onclick: () => { keyRow.hidden = !keyRow.hidden; keyIn.focus(); } }, t("haveKey")), keyRow),
-    h("p", { class: "lang" }, langToggle(renderWelcome)),
   ));
+  $app.prepend(h("div", { class: "welcome-top" }, langSwitch(renderWelcome)));
   name.focus();
 }
 
-function langToggle(rerender) {
-  return h("button", { class: "textlink", onclick: () => { state.lang = state.lang === "he" ? "en" : "he"; store.set("lang", state.lang); applyLang(); rerender(); } },
-    state.lang === "he" ? "English" : "עברית");
+// Language choice, always visible: עב | EN
+function langSwitch(rerender) {
+  return h("div", { class: "seg lang-switch", role: "group", "aria-label": "Language / שפה" },
+    [["he", "עב", "עברית"], ["en", "EN", "English"]].map(([code, short, full]) =>
+      h("button", { type: "button", lang: code, title: full, "aria-label": full, "aria-pressed": String(state.lang === code),
+        onclick: () => { if (state.lang === code) return; state.lang = code; store.set("lang", code); applyLang(); rerender(); } }, short)));
 }
 
 // ---------------------------------------------------------------- shell
@@ -195,6 +198,7 @@ function render() {
     h("header", { class: "top" }, h("div", { class: "top-in" },
       h("div", { class: "brand", title: g.title }, g.title),
       h("nav", { class: "tabs", role: "tablist" }, TABS.map(tabBtn)),
+      langSwitch(render),
       h("button", { class: "btn quiet", "aria-label": t("settings"), title: t("settings"), onclick: () => openSettings() }, "⚙︎"))),
     h("main", {}, setupCard(), view()),
   );
@@ -509,8 +513,6 @@ function openSettings(focus) {
         h("a", { class: "small", href: g.indexUrl, target: "_blank", rel: "noopener" }, t("publicPage")),
         h("button", { class: "textlink small", onclick: (e) => busy(e.currentTarget, async () => window.open(await g.authUrl(), "_blank", "noopener")) }, t("editOnTelegraph")))),
     sec("links", t("sLinks"), radio("first", t("linkFirst")), radio("all", t("linkAll"))),
-    sec("lang", t("sLang"), h("div", { class: "seg" }, ["he", "en"].map((l) => h("button", { type: "button", "aria-pressed": String(state.lang === l),
-      onclick: () => { state.lang = l; store.set("lang", l); applyLang(); d.close(); openSettings(); } }, l === "he" ? "עברית" : "English")))),
     h("section", { class: "set" }, h("div", {}, h("button", { class: "btn danger sm", onclick: () => {
       if (!confirm(t("confirmSignOut"))) return;
       for (const k of ["token", "draft", "bot", "chats", "chatId", "channels", "keySaved", "tried", "setupHidden", "tab"]) store.set(k, null);

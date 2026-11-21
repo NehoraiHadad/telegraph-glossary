@@ -24,7 +24,8 @@ const CODE_TTL = 24 * 3600;
 
 const T = {
   he: {
-    hello: "היי! אני מוסיף קישורים למונחים מהמילון שלך בפוסטים בערוץ, אוטומטית.\n\nכדי להתחיל, פתח את אתר המילון ← הגדרות ← \"קישור אוטומטי בערוץ\".",
+    hello: "היי! אני מוסיף קישורים למונחים מהמילון שלך בפוסטים בערוץ, אוטומטית.\n\nכדי להתחיל, פתח את אתר המילון ← לשונית „ערוץ” ← „חיבור ערוץ”.",
+    langSet: "מעכשיו אדבר איתך בעברית.",
     linked: (title) => `✅ המילון „${title}” מחובר.\n\nעכשיו הוסף אותי כמנהל לערוץ (עם הרשאת עריכת הודעות):`,
     addBtn: "➕ הוספה לערוץ",
     chanOk: (c, g) => `✅ הערוץ „${c}” מחובר למילון „${g}”.\nכל פוסט חדש יקבל קישורים אוטומטית. כשתוסיף מונחים, אעדכן גם פוסטים קודמים.\n\nפוסטים ישנים מלפני החיבור? פשוט תעביר (forward) אותם אליי.`,
@@ -35,10 +36,11 @@ const T = {
     fwdDone: (n) => (n ? `✅ עודכן (${n} מונחים).` : "אין בפוסט הזה מונחים מהמילון."),
     fwdUnknown: "את הפוסט הזה אני לא יכול לעדכן: הערוץ שלו לא מחובר אליי, או שהפוסט לא הועבר ישירות מהערוץ.",
     badCode: "הקישור פג תוקף. פתח שוב את ההגדרות באתר ולחץ על החיבור מחדש.",
-    help: "פקודות: /status — ערוצים מחוברים. כדי לעדכן פוסט ישן, העבר אותו אליי.",
+    help: "/status: ערוצים מחוברים\n/language: שפה\nכדי לעדכן פוסט ישן, העבר אותו אליי.",
   },
   en: {
-    hello: "Hi! I add links to your glossary terms in your channel posts, automatically.\n\nTo start, open the glossary web app → Settings → \"Auto-link my channel\".",
+    hello: "Hi! I add links to your glossary terms in your channel posts, automatically.\n\nTo start, open the glossary web app → Channel tab → “Connect a channel”.",
+    langSet: "I'll talk to you in English from now on.",
     linked: (title) => `✅ Glossary “${title}” connected.\n\nNow add me to your channel as an admin (with “edit messages”):`,
     addBtn: "➕ Add to channel",
     chanOk: (c, g) => `✅ Channel “${c}” now uses the glossary “${g}”.\nEvery new post gets links automatically, and when you add terms I update earlier posts too.\n\nOlder posts from before? Just forward them to me.`,
@@ -49,10 +51,12 @@ const T = {
     fwdDone: (n) => (n ? `✅ Updated (${n} terms).` : "No glossary terms in this post."),
     fwdUnknown: "I can't update that post: its channel isn't connected to me, or it wasn't forwarded straight from the channel.",
     badCode: "That link expired. Open the settings in the web app and connect again.",
-    help: "Commands: /status — connected channels. To update an old post, forward it to me.",
+    help: "/status: connected channels\n/language: language\nTo update an old post, forward it to me.",
   },
 };
 const tr = (user) => T[(user?.language_code || "").startsWith("he") ? "he" : "en"];
+const CHOOSE_LANG = "בחר שפה · Choose a language";
+const LANG_BUTTONS = { inline_keyboard: [[{ text: "עברית", callback_data: "lang:he" }, { text: "English", callback_data: "lang:en" }]] };
 
 export function hashTerms(terms) {
   const s = JSON.stringify([...terms].map((t) => [t.term, t.aliases, t.path]).sort());
@@ -88,6 +92,13 @@ export function createBot(deps) {
     return g;
   }
 
+  // A language the user picked with /language wins over their Telegram app language.
+  async function langOf(user) {
+    const pref = user?.id ? await kv.get(`lang:${user.id}`) : null;
+    return pref || ((user?.language_code || "").startsWith("he") ? "he" : "en");
+  }
+  const trU = async (user) => T[await langOf(user)];
+
   const say = (chatId, text, extra = {}) => tg("sendMessage", { chat_id: chatId, text, ...extra }).catch(() => {});
   // Deep link that opens "add to channel" with the edit right preselected (core.telegram.org/api/links).
   const addToChannelUrl = async () => `https://t.me/${await deps.username()}?startchannel&admin=edit_messages`;
@@ -103,11 +114,11 @@ export function createBot(deps) {
   async function bindChannel(chat, owner, path) {
     const prev = await kv.get(`chan:${chat.id}`);
     if (prev && prev.path !== path) await unlistChannel(prev.path, chat.id);
-    await kv.put(`chan:${chat.id}`, { path, owner: owner?.id, lang: owner?.language_code, title: chat.title, mode: prev?.mode || "first" });
+    await kv.put(`chan:${chat.id}`, { path, owner: owner?.id, lang: owner ? await langOf(owner) : "en", title: chat.title, mode: prev?.mode || "first" });
     const list = (await kv.get(`gchans:${path}`)) || [];
     if (!list.includes(String(chat.id))) await kv.put(`gchans:${path}`, [...list, String(chat.id)]);
     const g = await glossary(path);
-    if (owner) await say(owner.id, tr(owner).chanOk(chat.title, g.title));
+    if (owner) await say(owner.id, (await trU(owner)).chanOk(chat.title, g.title));
   }
 
   async function unlistChannel(path, chatId) {
@@ -120,7 +131,7 @@ export function createBot(deps) {
     if (!b) return;
     await unlistChannel(b.path, chat.id);
     await kv.del(`chan:${chat.id}`);
-    if (b.owner) await say(b.owner, tr(by).removed(chat.title));
+    if (b.owner) await say(b.owner, (await trU(by)).removed(chat.title));
   }
 
   // ------------------------------------------------------------ linking posts
@@ -213,17 +224,27 @@ export function createBot(deps) {
       if (chat.type !== "channel") return;
       if (["left", "kicked"].includes(m.status)) return unbindChannel(chat, from);
       if (m.status !== "administrator") return;
-      if (m.can_edit_messages === false) await say(from.id, tr(from).noEditRight(chat.title));
+      if (m.can_edit_messages === false) await say(from.id, (await trU(from)).noEditRight(chat.title));
       const path = await kv.get(`user:${from.id}`);
       if (path) return bindChannel(chat, from, path);
       const pending = (await kv.get(`pending:${from.id}`)) || [];
       await kv.put(`pending:${from.id}`, [...pending.filter((c) => c.id !== chat.id), { id: chat.id, title: chat.title }], { ttl: 7 * 24 * 3600 });
-      return say(from.id, tr(from).chanNoGlossary(chat.title));
+      return say(from.id, (await trU(from)).chanNoGlossary(chat.title));
+    }
+
+    if (u.callback_query) {
+      const q = u.callback_query;
+      const lang = /^lang:(he|en)$/.exec(q.data || "")?.[1];
+      if (!lang) return tg("answerCallbackQuery", { callback_query_id: q.id }).catch(() => {});
+      await kv.put(`lang:${q.from.id}`, lang);
+      await tg("answerCallbackQuery", { callback_query_id: q.id, text: T[lang].langSet }).catch(() => {});
+      if (q.message) await tg("editMessageText", { chat_id: q.message.chat.id, message_id: q.message.message_id, text: T[lang].langSet }).catch(() => {});
+      return;
     }
 
     const msg = u.message;
     if (!msg || msg.chat.type !== "private") return;
-    const user = msg.from, s = tr(user);
+    const user = msg.from, s = await trU(user);
 
     if (msg.forward_origin?.type === "channel") {
       const chat = msg.forward_origin.chat;
@@ -245,13 +266,15 @@ export function createBot(deps) {
       await kv.del(`pending:${user.id}`);
       return;
     }
+    if (cmd === "/language") return say(user.id, CHOOSE_LANG, { reply_markup: LANG_BUTTONS });
     if (cmd === "/status") {
       const path = await kv.get(`user:${user.id}`);
       const ids = path ? (await kv.get(`gchans:${path}`)) || [] : [];
       const names = await Promise.all(ids.map(async (id) => (await kv.get(`chan:${id}`))?.title || id));
       return say(user.id, s.status(names.map((n) => `• ${n}`)));
     }
-    return say(user.id, cmd === "/start" ? s.hello : s.help);
+    if (cmd === "/start") return say(user.id, `${s.hello}\n\n${CHOOSE_LANG}`, { reply_markup: LANG_BUTTONS });
+    return say(user.id, s.help);
   }
 
   async function status(path) {

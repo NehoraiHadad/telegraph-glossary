@@ -110,6 +110,13 @@ const step = (s) => console.log('▸', s);
   await sleep(2000);
   console.log('  edited old post 7:', !!edits().find(e => e.params.message_id === 7), '| reply:', calls().filter(c => c.method === 'sendMessage').at(-1).params.text);
 
+  step('language switch');
+  await p.click('.top .lang-switch button[lang=en]');
+  console.log('  tabs in English:', await p.$$eval('[role=tab]', ts => ts.map(t => t.textContent)), '| dir:', await p.getAttribute('html', 'dir'));
+  await p.screenshot({ path: process.env.OUT + '/j11-english.png' });
+  await p.click('.top .lang-switch button[lang=he]');
+  console.log('  back to Hebrew:', await p.getAttribute('html', 'dir'));
+
   step('mobile');
   const m = await b.newContext({ viewport: { width: 390, height: 844 }, deviceScaleFactor: 2, locale: 'he-IL' });
   const mp = await m.newPage();

@@ -30,7 +30,7 @@ Manual deploy: `cd bot && npm ci && npx wrangler deploy` (KV is provisioned auto
 | | |
 |---|---|
 | `POST /telegram` | webhook (checks `X-Telegram-Bot-Api-Secret-Token`) |
-| `GET /setup` | registers the webhook and commands |
+| `GET /setup` | registers the webhook and commands (`/status`, `/language`) |
 | `GET /api/info` | `{bot_username}` |
 | `POST /api/connect` | `{index_path}` → one-time `start_url` for the user |
 | `GET /api/status?index=` | connected channels |
@@ -39,6 +39,7 @@ Manual deploy: `cd bot && npm ci && npx wrangler deploy` (KV is provisioned auto
 
 ## Limits
 
+* The bot talks Hebrew or English: it follows the Telegram app language until the user picks one (buttons on Start, or `/language`).
 * Channels only. In groups, bots cannot edit other people's messages.
 * Bots can't read channel history, so posts from before the bot joined are updated only when forwarded.
 * Free plan: about 1,000 KV writes a day (about 2 per new post) and 50 outgoing requests per

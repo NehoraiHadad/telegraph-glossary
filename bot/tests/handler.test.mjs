@@ -137,3 +137,25 @@ test("unconnected channels are ignored", async () => {
   await t.bot.handleUpdate({ channel_post: { chat: { id: -5, type: "channel" }, message_id: 1, text: "API" } });
   assert.equal(edits(t.calls).length, 0);
 });
+
+test("language buttons: /start offers them, a choice overrides the Telegram app language", async () => {
+  const t = setup();
+  await t.bot.handleUpdate({ message: { chat: { id: 7, type: "private" }, from: user, text: "/start" } });
+  const start = t.calls.at(-1).params;
+  assert.match(start.text, /Choose a language/);
+  assert.deepEqual(start.reply_markup.inline_keyboard[0].map((b) => b.callback_data), ["lang:he", "lang:en"]);
+
+  t.calls.length = 0;
+  await t.bot.handleUpdate({ callback_query: { id: "q1", from: user, data: "lang:he", message: { message_id: 3, chat: { id: 7 } } } });
+  assert.equal(t.calls[0].method, "answerCallbackQuery");
+  assert.match(t.calls[1].params.text, /בעברית/);
+
+  // user's Telegram app is English, but they picked Hebrew
+  t.calls.length = 0;
+  await t.bot.handleUpdate({ message: { chat: { id: 7, type: "private" }, from: user, text: "/status" } });
+  assert.match(t.calls.at(-1).params.text, /אין ערוצים מחוברים/);
+
+  t.calls.length = 0;
+  await t.bot.handleUpdate({ message: { chat: { id: 7, type: "private" }, from: user, text: "/language" } });
+  assert.ok(t.calls.at(-1).params.reply_markup.inline_keyboard);
+});
