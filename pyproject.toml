@@ -1,0 +1,31 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "telegraph-glossary"
+version = "2.0.0"
+description = "A glossary on Telegraph that auto-links terms in your Telegram posts. CLI + MCP server for AI agents."
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.10"
+dependencies = ["httpx>=0.25", "mcp>=1.2"]
+keywords = ["telegraph", "telegram", "glossary", "mcp", "ai-agent"]
+
+[project.scripts]
+telegraph-glossary = "telegraph_glossary.cli:main"
+tgg = "telegraph_glossary.cli:main"
+telegraph-glossary-mcp = "telegraph_glossary.mcp_server:main"
+
+[project.urls]
+Homepage = "https://nehoraihadad.github.io/telegraph-glossary/"
+Repository = "https://github.com/NehoraiHadad/telegraph-glossary"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/telegraph_glossary"]
+
+[tool.hatch.build.targets.sdist]
+include = ["src", "spec", "tests", "README.md"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

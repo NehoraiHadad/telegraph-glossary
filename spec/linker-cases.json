@@ -1,0 +1,116 @@
+{
+  "_doc": "Shared test vectors for the term linker. Both web/core/linker.js and src/telegraph_glossary/linker.py must produce exactly `expected_html` (Telegram HTML) and `expected_found` for each case.",
+  "terms": [
+    { "term": "API", "aliases": ["APIs"], "url": "https://telegra.ph/API-01" },
+    { "term": "פייתון", "aliases": ["Python"], "url": "https://telegra.ph/Python-01" },
+    { "term": "למידת מכונה", "aliases": ["machine learning", "ML"], "url": "https://telegra.ph/ML-01" },
+    { "term": "מודל", "aliases": [], "url": "https://telegra.ph/Model-01" },
+    { "term": "C++", "aliases": [], "url": "https://telegra.ph/Cpp-01" }
+  ],
+  "cases": [
+    {
+      "name": "simple latin term",
+      "text": "Call the API now",
+      "expected_html": "Call the <a href=\"https://telegra.ph/API-01\">API</a> now",
+      "expected_found": ["API"]
+    },
+    {
+      "name": "case insensitive, keeps original casing",
+      "text": "the api is up",
+      "expected_html": "the <a href=\"https://telegra.ph/API-01\">api</a> is up",
+      "expected_found": ["API"]
+    },
+    {
+      "name": "no match inside a longer word",
+      "text": "RAPID growth and APIary",
+      "expected_html": "RAPID growth and APIary",
+      "expected_found": []
+    },
+    {
+      "name": "alias is preferred when longer",
+      "text": "Many APIs exist",
+      "expected_html": "Many <a href=\"https://telegra.ph/API-01\">APIs</a> exist",
+      "expected_found": ["API"]
+    },
+    {
+      "name": "hebrew prefix letter attached",
+      "text": "כתבתי את זה בפייתון אתמול",
+      "expected_html": "כתבתי את זה ב<a href=\"https://telegra.ph/Python-01\">פייתון</a> אתמול",
+      "expected_found": ["פייתון"]
+    },
+    {
+      "name": "hebrew prefix with maqaf before latin",
+      "text": "שלחנו בקשה ל-API של השרת",
+      "expected_html": "שלחנו בקשה ל-<a href=\"https://telegra.ph/API-01\">API</a> של השרת",
+      "expected_found": ["API"]
+    },
+    {
+      "name": "hebrew prefix glued to latin",
+      "text": "התחברנו לAPI",
+      "expected_html": "התחברנו ל<a href=\"https://telegra.ph/API-01\">API</a>",
+      "expected_found": ["API"]
+    },
+    {
+      "name": "multi word term",
+      "text": "מה זה למידת מכונה בעצם?",
+      "expected_html": "מה זה <a href=\"https://telegra.ph/ML-01\">למידת מכונה</a> בעצם?",
+      "expected_found": ["למידת מכונה"]
+    },
+    {
+      "name": "term that starts with a prefix letter",
+      "text": "המודל אומן. מודל נוסף.",
+      "expected_html": "ה<a href=\"https://telegra.ph/Model-01\">מודל</a> אומן. מודל נוסף.",
+      "expected_found": ["מודל"]
+    },
+    {
+      "name": "only first occurrence by default",
+      "text": "API, API and API",
+      "expected_html": "<a href=\"https://telegra.ph/API-01\">API</a>, API and API",
+      "expected_found": ["API"]
+    },
+    {
+      "name": "all occurrences mode",
+      "options": { "mode": "all" },
+      "text": "API, API",
+      "expected_html": "<a href=\"https://telegra.ph/API-01\">API</a>, <a href=\"https://telegra.ph/API-01\">API</a>",
+      "expected_found": ["API"]
+    },
+    {
+      "name": "excluded term is not linked",
+      "options": { "exclude": ["API"] },
+      "text": "API in Python",
+      "expected_html": "API in <a href=\"https://telegra.ph/Python-01\">Python</a>",
+      "expected_found": ["פייתון"]
+    },
+    {
+      "name": "urls are left untouched",
+      "text": "see https://example.com/api/python and API",
+      "expected_html": "see https://example.com/api/python and <a href=\"https://telegra.ph/API-01\">API</a>",
+      "expected_found": ["API"]
+    },
+    {
+      "name": "html special chars are escaped",
+      "text": "a < b & API > c",
+      "expected_html": "a &lt; b &amp; <a href=\"https://telegra.ph/API-01\">API</a> &gt; c",
+      "expected_found": ["API"]
+    },
+    {
+      "name": "term with symbols",
+      "text": "I like C++ a lot",
+      "expected_html": "I like <a href=\"https://telegra.ph/Cpp-01\">C++</a> a lot",
+      "expected_found": ["C++"]
+    },
+    {
+      "name": "found list is in order of first appearance",
+      "text": "ML with Python via API",
+      "expected_html": "<a href=\"https://telegra.ph/ML-01\">ML</a> with <a href=\"https://telegra.ph/Python-01\">Python</a> via <a href=\"https://telegra.ph/API-01\">API</a>",
+      "expected_found": ["למידת מכונה", "פייתון", "API"]
+    },
+    {
+      "name": "multiline text keeps newlines",
+      "text": "line one API\nline two",
+      "expected_html": "line one <a href=\"https://telegra.ph/API-01\">API</a>\nline two",
+      "expected_found": ["API"]
+    }
+  ]
+}

@@ -1,95 +1,125 @@
 # Telegraph Glossary
 
-Personal glossary app with Telegraph integration - Built with Streamlit
+**Write a Telegram post, and terms from your glossary become links to short explanation pages.**
 
-## Features
+Each term is a [Telegraph](https://telegra.ph) page, so explanations open instantly inside
+Telegram (Instant View). Free, no sign-up, no server.
 
-- Create and manage glossary terms with Telegraph pages
-- Process text with marked terms (e.g., `term<?>`) and convert to links
-- Send formatted messages directly to Telegram
-- Multiple syntax options for marking terms
+> כותבים פוסט, והמונחים מהמילון שלך הופכים לקישורים לדפי הסבר קצרים שנפתחים ישר בטלגרם.
 
-## Deploy to Streamlit Cloud
+## Three ways to use it
 
-1. Fork this repository
-2. Go to [share.streamlit.io](https://share.streamlit.io)
-3. Connect your GitHub account
-4. Select this repo and `app.py`
-5. Add your secrets in Advanced Settings (see below)
+| | For | How |
+|---|---|---|
+| **Web app** | everyone | open **https://nehoraihadad.github.io/telegraph-glossary/** |
+| **AI agents** | Claude Code, Codex, Antigravity, Cursor, Claude Desktop… | MCP server, see below |
+| **CLI / Python** | scripts, automation | `telegraph-glossary` command, or `import telegraph_glossary` |
 
-## Secrets Configuration
+All three work on **the same glossary**. Copy your key from the web app's settings and use it anywhere.
 
-For Streamlit Cloud, add these secrets in your app settings:
+## Web app
 
-```toml
-[telegraph]
-access_token = "your-telegraph-access-token"
-short_name = "MyGlossary"
-author_name = "Your Name"
-index_page_path = "your-index-page-path"
+1. **Create a glossary.** Give it a name. A Telegraph account is created in the background.
+2. **Add terms.** A term has a name, other forms to link (plural, English name, abbreviation)
+   and a short explanation (Markdown).
+3. **Write.** Terms are detected automatically, including Hebrew prefixes (`בפייתון`, `ל-API`).
+   Click a detected term to turn its link off. Select a word in your text to add it as a new term.
+4. **Send or copy.** *Copy* puts the text on the clipboard with its links (HTML + plain text).
+   With your own bot (Settings → Send to Telegram, about 2 minutes with @BotFather), *Send* posts
+   straight to your channel. The app finds the channels your bot was added to, so you never need
+   to look up a chat ID.
 
-[telegram]
-bot_token = "your-telegram-bot-token"
-```
+Your **key** (the Telegraph access token) is kept in your browser only. Back it up from
+Settings: download it, or copy a link that opens the glossary on another device.
+Whoever has the key can edit the glossary.
 
-To get Telegraph credentials:
-- Run the app locally first (it will create an account automatically), or
-- Create an account at [telegra.ph](https://telegra.ph) using their API
+## Use it from AI agents
 
-## Local Development
+Requires [uv](https://docs.astral.sh/uv/). Replace `<KEY>` with your key (Settings → Your key in
+the web app, or run `telegraph-glossary init` to create a glossary from the terminal).
+
+**Claude Code**
 
 ```bash
-pip install -r requirements.txt
-export TELEGRAM_BOT_TOKEN="your-bot-token"
-streamlit run app.py
+claude mcp add telegraph-glossary -e TELEGRAPH_ACCESS_TOKEN=<KEY> -- \
+  uvx --from git+https://github.com/NehoraiHadad/telegraph-glossary telegraph-glossary mcp
 ```
 
-On first run, the app will guide you through creating a Telegraph account.
+**Codex**
 
-## User Settings
-
-User-specific settings (Chat ID, marking syntax) are stored in URL query parameters.
-This means:
-
-- **Each user has isolated settings** - no conflicts between users
-- **Settings survive deployments** - they're in the URL, not on the server
-- **Bookmark to save** - users should bookmark the page after configuring their Chat ID
-
-Example URL with settings:
-```
-https://your-app.streamlit.app/?cid=@yourchannel&syn=%3C%3F%3E
+```bash
+codex mcp add telegraph-glossary --env TELEGRAPH_ACCESS_TOKEN=<KEY> -- \
+  uvx --from git+https://github.com/NehoraiHadad/telegraph-glossary telegraph-glossary mcp
 ```
 
-## Telegram Integration
+**Anything else that speaks MCP** (Antigravity, Cursor, Claude Desktop, Gemini CLI…):
 
-To send messages with clickable links to Telegram:
+```json
+{
+  "mcpServers": {
+    "telegraph-glossary": {
+      "command": "uvx",
+      "args": ["--from", "git+https://github.com/NehoraiHadad/telegraph-glossary", "telegraph-glossary", "mcp"],
+      "env": {
+        "TELEGRAPH_ACCESS_TOKEN": "<KEY>",
+        "TELEGRAM_BOT_TOKEN": "optional, for send_to_telegram",
+        "TELEGRAM_CHAT_ID": "optional default, e.g. @mychannel"
+      }
+    }
+  }
+}
+```
 
-1. Create a bot via [@BotFather](https://t.me/BotFather)
-2. Add the bot to your channel/group as admin
-3. Set the bot token in secrets
-4. In the app, go to Settings and enter your Chat ID
-5. **Bookmark the page** to save your Chat ID
+Tools: `glossary_info`, `list_terms`, `get_term`, `add_term`, `update_term`, `remove_term`,
+`link_text`, `send_to_telegram` (has `dry_run`).
 
-### Finding Your Chat ID
+Then just talk to the agent: *"Here's my post. Link the glossary terms, suggest definitions for
+jargon that's missing, and send it to my channel."*
 
-**Public channels:** Use `@yourchannel` (with @ symbol)
+## CLI
 
-**Private channels/groups:**
-1. Open [web.telegram.org](https://web.telegram.org)
-2. Go to your channel/group
-3. Look at the URL: `web.telegram.org/a/#-1001234567890`
-4. Your Chat ID is `-1001234567890` (including the minus)
+```bash
+pip install git+https://github.com/NehoraiHadad/telegraph-glossary   # or: uvx --from ... telegraph-glossary
 
-## Architecture
+telegraph-glossary init --title "My glossary"     # new glossary (or: login <KEY>)
+tgg add API -a "APIs,ממשק תכנות" -d "**Application Programming Interface**"
+tgg list
+tgg link post.txt                  # Telegram HTML to stdout (--format markdown)
+tgg telegram --bot-token 123:ABC --chat @mychannel
+tgg chats                          # chats your bot has seen
+tgg send post.txt --dry-run
+```
+
+Settings live in `~/.config/telegraph-glossary/config.json`. The environment variables
+`TELEGRAPH_ACCESS_TOKEN`, `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` take precedence.
+
+## How it's built
 
 ```
-Admin Settings (st.secrets)     User Settings (URL params)
-        |                               |
-        v                               v
-   ConfigManager              UserSettingsManager
-        |                               |
-        +---------------+---------------+
-                        |
-                        v
-                st.session_state.config
+web/            static web app (no build step), deployed to GitHub Pages
+  core/         linker, Markdown <-> Telegraph nodes, storage. Plain ES modules.
+src/telegraph_glossary/
+                the same core in Python + CLI + MCP server
+spec/           shared test cases both linkers must pass
+docs/FORMAT.md  how a glossary is stored on Telegraph
+legacy/         the previous Streamlit app (kept for reference)
 ```
+
+Both Telegraph and the Telegram Bot API allow browser (CORS) requests, so the web app talks
+to them directly. Nothing goes through a backend.
+
+```bash
+node --test web/tests/*.mjs     # web core
+pip install -e . pytest && pytest
+python -m http.server -d web    # run the web app locally
+```
+
+**Deploying the web app:** in the repo settings, set *Pages → Source* to *GitHub Actions*.
+`.github/workflows/pages.yml` publishes `web/` on every push to `main`.
+
+## Related
+
+[telegraph-mcp](https://github.com/NehoraiHadad/telegraph-mcp) /
+[telegraph-mcp-py](https://github.com/NehoraiHadad/telegraph-mcp-py): general Telegraph MCP servers ·
+[telegraph-js](https://github.com/NehoraiHadad/telegraph-js) /
+[telegraph-py](https://github.com/NehoraiHadad/telegraph-py): Telegraph API clients.

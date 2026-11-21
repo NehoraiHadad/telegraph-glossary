@@ -1,0 +1,136 @@
+"""Term linker: finds glossary terms in plain text and turns them into links.
+
+Behavior-identical to web/core/linker.js; both are tested against
+spec/linker-cases.json.
+"""
+
+from __future__ import annotations
+
+import re
+from dataclasses import dataclass, field
+from typing import Iterable, Literal, Optional, Sequence
+
+# One-to-three Hebrew prefix letters (ו ה ב כ ל מ ש) optionally followed by a maqaf/hyphen.
+HEB_PREFIX = r"(?:[והבכלמש]{1,3}[-־]?)?"
+# Spans that must never be touched: URLs, @mentions, #hashtags.
+PROTECTED = re.compile(r"(?:https?://|www\.)\S+|[@#]\w+")
+
+
+@dataclass
+class Term:
+    term: str
+    url: str
+    aliases: list[str] = field(default_factory=list)
+
+
+@dataclass
+class Segment:
+    text: str
+    term: Optional[str] = None
+    url: Optional[str] = None
+    linked: bool = False
+
+
+def escape_html(s: str) -> str:
+    return s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
+def _escape_attr(s: str) -> str:
+    return escape_html(s).replace('"', "&quot;")
+
+
+def _as_term(t) -> Term:
+    if isinstance(t, Term):
+        return t
+    return Term(term=t["term"], url=t["url"], aliases=list(t.get("aliases") or []))
+
+
+def find_terms(
+    text: str,
+    terms: Iterable,
+    mode: Literal["first", "all"] = "first",
+    exclude: Sequence[str] = (),
+) -> tuple[list[Segment], list[str]]:
+    """Split ``text`` into segments; return (segments, found canonical terms)."""
+    excluded = {t.lower() for t in exclude}
+    form_to_term: dict[str, Term] = {}
+    for t in map(_as_term, terms):
+        for form in [t.term, *t.aliases]:
+            f = form.strip()
+            if f and f.lower() not in form_to_term:
+                form_to_term[f.lower()] = t
+    if not form_to_term:
+        return ([Segment(text)] if text else []), []
+
+    forms = sorted(form_to_term, key=lambda f: (-len(f), f))
+    pattern = re.compile(
+        rf"(?<!\w)({HEB_PREFIX})({'|'.join(map(re.escape, forms))})(?!\w)", re.IGNORECASE
+    )
+
+    segments: list[Segment] = []
+    found: list[str] = []
+    seen: set[str] = set()
+
+    def push(s: str) -> None:
+        if not s:
+            return
+        if segments and segments[-1].term is None:
+            segments[-1].text += s
+        else:
+            segments.append(Segment(s))
+
+    def scan(chunk: str) -> None:
+        pos = 0
+        for m in pattern.finditer(chunk):
+            prefix, form = m.group(1), m.group(2)
+            t = form_to_term[form.lower()]
+            push(chunk[pos : m.start()] + prefix)
+            key = t.term.lower()
+            is_excluded = key in excluded
+            linked = not is_excluded and (mode == "all" or key not in seen)
+            if not is_excluded and key not in seen:
+                seen.add(key)
+                found.append(t.term)
+            segments.append(Segment(form, t.term, t.url, linked))
+            pos = m.end()
+        push(chunk[pos:])
+
+    pos = 0
+    for m in PROTECTED.finditer(text):
+        scan(text[pos : m.start()])
+        push(m.group(0))
+        pos = m.end()
+    scan(text[pos:])
+    return segments, found
+
+
+def to_telegram_html(segments: Sequence[Segment]) -> str:
+    return "".join(
+        f'<a href="{_escape_attr(s.url or "")}">{escape_html(s.text)}</a>'
+        if s.term is not None and s.linked
+        else escape_html(s.text)
+        for s in segments
+    )
+
+
+def _md_escape(s: str) -> str:
+    return re.sub(r"([\[\]])", r"\\\1", s)
+
+
+def to_markdown(segments: Sequence[Segment]) -> str:
+    return "".join(
+        f"[{_md_escape(s.text)}]({s.url})" if s.term is not None and s.linked else s.text for s in segments
+    )
+
+
+@dataclass
+class LinkResult:
+    html: str
+    markdown: str
+    found: list[str]
+    segments: list[Segment]
+
+
+def link_text(text: str, terms: Iterable, mode: str = "first", exclude: Sequence[str] = ()) -> LinkResult:
+    segments, found = find_terms(text, terms, mode=mode, exclude=exclude)  # type: ignore[arg-type]
+    return LinkResult(to_telegram_html(segments), to_markdown(segments), found, segments)
