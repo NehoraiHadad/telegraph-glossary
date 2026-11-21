@@ -53,16 +53,13 @@ Agents that browse can read [`llms.txt`](web/llms.txt). The CLI does the same fr
 
 ## For the owner: deploy
 
-The site and the bot deploy together from `.github/workflows/deploy.yml` on every push to `main`.
+Both deploy on every push to `main`, and no deploy secrets live in GitHub.
 
-1. **Settings → Pages → Source: GitHub Actions.** This alone publishes the site.
-2. For the auto-link bot, add **Settings → Secrets → Actions**:
-   - `BOT_TOKEN`: from @BotFather (`/newbot`)
-   - `CLOUDFLARE_API_TOKEN`: Cloudflare → My Profile → API Tokens → template *Edit Cloudflare Workers*
-   - `CLOUDFLARE_ACCOUNT_ID`: only if that token can see more than one account
-
-   The workflow creates the KV store, deploys the Worker, points the bot's webhook at it and tells
-   the site where it is. Nothing else to configure. Details: [bot/README.md](bot/README.md).
+1. **Site:** `.github/workflows/deploy.yml` publishes `web/` to GitHub Pages
+   (one-time: **Settings → Pages → Source: GitHub Actions**).
+2. **Bot:** Cloudflare Workers Builds, connected to this repo in the Cloudflare dashboard. The bot's
+   address is in [`web/config.json`](web/config.json), which is how the site, the CLI and the MCP
+   server find it. Setup and details: [bot/README.md](bot/README.md).
 
 ## Development
 

@@ -2,13 +2,14 @@ name = "telegraph-glossary-bot"
 main = "src/index.js"
 compatibility_date = "2025-09-01"
 
-# The web app, opened as a Telegram Mini App (menu button, /app). The deploy workflow sets it.
+# The web app, opened as a Telegram Mini App (menu button, /app). /setup registers it with Telegram.
 [vars]
 WEB_APP_URL = "https://nehoraihadad.github.io/telegraph-glossary/"
 
-# KV is created automatically on deploy (CI fills in the id; see .github/workflows/deploy.yml).
+# KV namespace "telegraph-glossary-bot-KV" (not a secret). Deployed by Cloudflare Workers Builds; see README.md.
 [[kv_namespaces]]
 binding = "KV"
+id = "8b2ba50c585340319fc9a5024964a7a2"
 
 # Re-apply glossary edits made outside the web app (CLI, agents) every 15 minutes.
 [triggers]
