@@ -1,14 +1,10 @@
-name: Deploy
+name: Deploy site
 
-# Publishes the web app to GitHub Pages and, when the secrets exist, the channel
-# auto-link bot to Cloudflare Workers. The site is told the bot's address automatically.
+# Publishes the web app (web/) to GitHub Pages on every push to main.
+# One-time setup: repo Settings -> Pages -> Source: "GitHub Actions".
 #
-# One-time setup (repo Settings):
-#   Pages -> Source: "GitHub Actions"
-#   Secrets -> Actions:
-#     BOT_TOKEN              token from @BotFather
-#     CLOUDFLARE_API_TOKEN   Cloudflare API token, template "Edit Cloudflare Workers"
-#     CLOUDFLARE_ACCOUNT_ID  (only if the token can see more than one account)
+# The channel bot (bot/) is deployed separately by Cloudflare Workers Builds, which is
+# connected to this repo in the Cloudflare dashboard. See bot/README.md.
 
 on:
   push:
@@ -16,59 +12,11 @@ on:
   workflow_dispatch:
 
 concurrency:
-  group: deploy
+  group: pages
   cancel-in-progress: false
 
 jobs:
-  bot:
-    runs-on: ubuntu-latest
-    outputs:
-      url: ${{ steps.deploy.outputs.url }}
-    env:
-      BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
-      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-    defaults:
-      run:
-        working-directory: bot
-    steps:
-      - uses: actions/checkout@v4
-      - id: check
-        run: |
-          if [ -n "$BOT_TOKEN" ] && [ -n "$CLOUDFLARE_API_TOKEN" ]; then echo "on=true" >> "$GITHUB_OUTPUT";
-          else echo "::notice::Bot secrets not set, deploying the web app only."; echo "on=false" >> "$GITHUB_OUTPUT"; fi
-      - if: steps.check.outputs.on == 'true'
-        uses: actions/setup-node@v4
-        with:
-          node-version: 22
-      - if: steps.check.outputs.on == 'true'
-        run: npm ci && npm test
-      - name: Find or create the KV namespace
-        if: steps.check.outputs.on == 'true'
-        run: |
-          TITLE="telegraph-glossary-bot-KV"
-          find_id() { npx wrangler kv namespace list | jq -r --arg t "$TITLE" '[.[] | select(.title==$t or (.title|endswith($t)))][0].id // empty'; }
-          ID=$(find_id)
-          if [ -z "$ID" ]; then npx wrangler kv namespace create "$TITLE"; ID=$(find_id); fi
-          test -n "$ID"
-          sed -i "s/^binding = \"KV\"$/binding = \"KV\"\nid = \"$ID\"/" wrangler.toml
-      - id: deploy
-        name: Deploy the Worker
-        if: steps.check.outputs.on == 'true'
-        run: |
-          jq -n --arg t "$BOT_TOKEN" '{BOT_TOKEN: $t}' > "$RUNNER_TEMP/secrets.json"
-          WRANGLER_OUTPUT_FILE_PATH="$RUNNER_TEMP/out.ndjson" npx wrangler deploy --secrets-file "$RUNNER_TEMP/secrets.json"
-          rm "$RUNNER_TEMP/secrets.json"
-          URL=$(jq -r 'select(.type=="deploy") | .targets[]? ' "$RUNNER_TEMP/out.ndjson" | grep workers.dev | head -1)
-          test -n "$URL"
-          echo "url=$URL" >> "$GITHUB_OUTPUT"
-      - name: Point the Telegram bot at the Worker
-        if: steps.check.outputs.on == 'true'
-        run: curl -fsS "${{ steps.deploy.outputs.url }}/setup"
-
   web:
-    needs: bot
-    if: always()
     runs-on: ubuntu-latest
     permissions:
       pages: write
@@ -78,12 +26,10 @@ jobs:
       url: ${{ steps.pages.outputs.page_url }}
     steps:
       - uses: actions/checkout@v4
-      - name: Tell the site where the bot is
-        env:
-          BOT_URL: ${{ needs.bot.outputs.url }}
-        run: |
-          jq -n --arg u "$BOT_URL" '{bot_api: $u}' > web/config.json
-          cat web/config.json
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: node --test web/tests/*.mjs
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3
         with:

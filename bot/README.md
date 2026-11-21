@@ -14,19 +14,32 @@ one (buttons on Start, or `/language`).
 
 ## Deploy
 
-This is automatic from GitHub Actions (`.github/workflows/deploy.yml`) once the repo has the
-secrets `BOT_TOKEN` and `CLOUDFLARE_API_TOKEN`; see the main README. On each push to `main`, the workflow:
+Cloudflare Workers Builds deploys the Worker on every push to `main` that touches the bot.
+GitHub holds no Cloudflare or Telegram secrets.
 
-1. finds or creates the KV namespace `telegraph-glossary-bot-KV`
-2. deploys the Worker with `BOT_TOKEN` as a secret
-3. calls `<worker>/setup`, which points the bot's webhook at the Worker and sets its commands
-4. writes the Worker URL into the site's `config.json`, so the site shows the Channel feature
+One-time setup:
 
-Only `BOT_TOKEN` is needed: the webhook secret is derived from it. `/setup` is idempotent and safe
-to call by anyone, because it can only point the bot at this Worker.
+1. Create the KV namespace and put its id in `wrangler.toml` (the id is not a secret):
+   `npx wrangler kv namespace create telegraph-glossary-bot-KV`
+2. First deploy and the bot token (stored as a Worker secret, kept across deploys):
+   `cd bot && npm ci && npx wrangler deploy`, then `npx wrangler secret put BOT_TOKEN`.
+3. Open `<worker-url>/setup` once. It points the bot's webhook at the Worker and sets its
+   commands. Run it again only if the Worker URL changes. It is idempotent and safe to call by
+   anyone, because it can only point the bot at this Worker.
+4. Put the Worker URL in `web/config.json` (`{"bot_api": "<worker-url>"}`). The site shows the
+   Channel tab only when it is set, and the CLI and MCP server read it from the published site.
+5. Cloudflare dashboard → the Worker → **Settings → Build** → connect this GitHub repo:
 
-Manual deploy: `cd bot && npm ci && npx wrangler deploy` (KV is provisioned automatically),
-`npx wrangler secret put BOT_TOKEN`, then open `<worker-url>/setup`.
+   | Setting | Value |
+   |---|---|
+   | Git branch (production) | `main` |
+   | Enable Preview Builds | off |
+   | Root directory | `bot` |
+   | Build command | `npm ci && npm test` |
+   | Deploy command | `npx wrangler deploy` (default) |
+   | Build watch paths, include | `bot/*`, `web/core/*` (the bot imports shared code from `web/core/`) |
+
+Only `BOT_TOKEN` is needed: the webhook secret is derived from it.
 
 ## Routes
 
