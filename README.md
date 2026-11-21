@@ -1,95 +1,82 @@
 # Telegraph Glossary
 
-Personal glossary app with Telegraph integration - Built with Streamlit
+**Every term in your Telegram posts, explained in one tap.**
 
-## Features
+You build a glossary once. Each term becomes a short [Telegraph](https://telegra.ph) page
+(it opens instantly inside Telegram), and terms in your posts link to it.
 
-- Create and manage glossary terms with Telegraph pages
-- Process text with marked terms (e.g., `term<?>`) and convert to links
-- Send formatted messages directly to Telegram
-- Multiple syntax options for marking terms
+> בונים מילון פעם אחת, ומונחים בפוסטים שלך בטלגרם מקושרים לדף הסבר קצר.
 
-## Deploy to Streamlit Cloud
+**Web app:** https://nehoraihadad.github.io/telegraph-glossary/
 
-1. Fork this repository
-2. Go to [share.streamlit.io](https://share.streamlit.io)
-3. Connect your GitHub account
-4. Select this repo and `app.py`
-5. Add your secrets in Advanced Settings (see below)
+## For users
 
-## Secrets Configuration
+1. **Create a glossary.** Give it a name. No sign-up.
+2. **Add terms.** Each term has a short explanation, plus *other forms* such as the plural, the English name or an acronym.
+   Hebrew prefixes (בפייתון, ל-API) are matched automatically.
+3. **Connect your channel** (Channel tab). Press Start in the bot and add it to the channel.
+   From then on you post as usual, and the bot adds the links within seconds. When you add a term,
+   earlier posts are updated too. To update older posts, forward them to the bot.
+4. **Save your key** (Settings). It is the only way back to your glossary.
 
-For Streamlit Cloud, add these secrets in your app settings:
+No channel? The **Post** tab shows which terms will be linked and copies the post with its links.
 
-```toml
-[telegraph]
-access_token = "your-telegraph-access-token"
-short_name = "MyGlossary"
-author_name = "Your Name"
-index_page_path = "your-index-page-path"
+## For AI agents
 
-[telegram]
-bot_token = "your-telegram-bot-token"
-```
-
-To get Telegraph credentials:
-- Run the app locally first (it will create an account automatically), or
-- Create an account at [telegra.ph](https://telegra.ph) using their API
-
-## Local Development
+Any MCP-capable agent can manage the glossary: Claude Code, Codex, Gemini CLI, Antigravity,
+Cursor, Claude Desktop. The **AI agents** tab in the web app gives a ready command with your key.
+It requires [uv](https://docs.astral.sh/uv/).
 
 ```bash
-pip install -r requirements.txt
-export TELEGRAM_BOT_TOKEN="your-bot-token"
-streamlit run app.py
+claude mcp add telegraph-glossary --scope user -e TELEGRAPH_ACCESS_TOKEN=<KEY> -- \
+  uvx --from git+https://github.com/NehoraiHadad/telegraph-glossary telegraph-glossary mcp
 ```
 
-On first run, the app will guide you through creating a Telegraph account.
+Then ask, for example: *"Which terms from this post are missing from my glossary?"*
 
-## User Settings
+| Tool | What it does |
+|---|---|
+| `glossary_info` | title, public page, term count, whether a channel is auto-linked |
+| `list_terms` `get_term` `add_term` `update_term` `remove_term` | manage terms (definitions in Markdown) |
+| `link_text` | the post as Telegram HTML with links, plus the terms found |
+| `connect_channel` `channel_status` | connect a channel to the auto-link bot |
+| `send_to_telegram` | send through your own bot (`TELEGRAM_BOT_TOKEN`) |
+| prompt `link_post` | link a post and suggest missing terms |
 
-User-specific settings (Chat ID, marking syntax) are stored in URL query parameters.
-This means:
+Agents that browse can read [`llms.txt`](web/llms.txt). The CLI does the same from a terminal:
+`telegraph-glossary init | add | list | link | channel connect | ...` (`tgg` for short).
 
-- **Each user has isolated settings** - no conflicts between users
-- **Settings survive deployments** - they're in the URL, not on the server
-- **Bookmark to save** - users should bookmark the page after configuring their Chat ID
+## For the owner: deploy
 
-Example URL with settings:
-```
-https://your-app.streamlit.app/?cid=@yourchannel&syn=%3C%3F%3E
-```
+Both deploy on every push to `main`, and no deploy secrets live in GitHub.
 
-## Telegram Integration
+1. **Site:** `.github/workflows/deploy.yml` publishes `web/` to GitHub Pages
+   (one-time: **Settings → Pages → Source: GitHub Actions**).
+2. **Bot:** Cloudflare Workers Builds, connected to this repo in the Cloudflare dashboard. The bot's
+   address is in [`web/config.json`](web/config.json), which is how the site, the CLI and the MCP
+   server find it. Setup and details: [bot/README.md](bot/README.md).
 
-To send messages with clickable links to Telegram:
-
-1. Create a bot via [@BotFather](https://t.me/BotFather)
-2. Add the bot to your channel/group as admin
-3. Set the bot token in secrets
-4. In the app, go to Settings and enter your Chat ID
-5. **Bookmark the page** to save your Chat ID
-
-### Finding Your Chat ID
-
-**Public channels:** Use `@yourchannel` (with @ symbol)
-
-**Private channels/groups:**
-1. Open [web.telegram.org](https://web.telegram.org)
-2. Go to your channel/group
-3. Look at the URL: `web.telegram.org/a/#-1001234567890`
-4. Your Chat ID is `-1001234567890` (including the minus)
-
-## Architecture
+## Development
 
 ```
-Admin Settings (st.secrets)     User Settings (URL params)
-        |                               |
-        v                               v
-   ConfigManager              UserSettingsManager
-        |                               |
-        +---------------+---------------+
-                        |
-                        v
-                st.session_state.config
+web/       static web app (no build step)
+  core/    linker, Telegram entities, Markdown <-> Telegraph, storage (shared with bot/)
+bot/       auto-link bot, Cloudflare Worker
+src/       Python package: CLI + MCP server
+spec/      linker cases both implementations must pass
+e2e/       full local run: site + Worker + fake Telegram, in a real browser
+docs/      FORMAT.md, how a glossary is stored on Telegraph
+legacy/    the previous Streamlit app
 ```
+
+```bash
+node --test web/tests/*.mjs bot/tests/*.mjs     # JS units + bot flows
+pip install -e . pytest && pytest               # Python
+e2e/run.sh                                      # end to end (Playwright + wrangler)
+python -m http.server -d web                    # run the site locally
+```
+
+Related: [telegraph-mcp](https://github.com/NehoraiHadad/telegraph-mcp),
+[telegraph-mcp-py](https://github.com/NehoraiHadad/telegraph-mcp-py),
+[telegraph-js](https://github.com/NehoraiHadad/telegraph-js),
+[telegraph-py](https://github.com/NehoraiHadad/telegraph-py).
