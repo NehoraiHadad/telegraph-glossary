@@ -15,7 +15,7 @@ function setup() {
   let terms = [{ term: "API", aliases: [], path: "API-1" }, { term: "פייתון", aliases: ["Python"], path: "Py-1" }];
   const bot = createBot({
     kv,
-    botUsername: "GlossBot",
+    username: async () => "GlossBot",
     tg: async (method, params) => { calls.push({ method, params }); return { message_id: 1 }; },
     getPage: async () => ({ title: "My glossary", content: buildIndex(terms, "My glossary") }),
   });

@@ -71,7 +71,7 @@ export function randomCode() {
  *   kv: { get(key) -> json|null, put(key, json, {ttl}?), del(key), list(prefix) -> [key] },
  *   tg(method, params) -> result (throws Error with .description),
  *   getPage(path) -> {title, content},   // Telegraph page (public)
- *   botUsername,
+ *   username() -> bot @username (without @),
  * }
  */
 export function createBot(deps) {
@@ -89,13 +89,15 @@ export function createBot(deps) {
   }
 
   const say = (chatId, text, extra = {}) => tg("sendMessage", { chat_id: chatId, text, ...extra }).catch(() => {});
-  const addToChannelUrl = () => `https://t.me/${deps.botUsername}?startchannel&admin=edit_messages`;
+  // Deep link that opens "add to channel" with the edit right preselected (core.telegram.org/api/links).
+  const addToChannelUrl = async () => `https://t.me/${await deps.username()}?startchannel&admin=edit_messages`;
 
   // ------------------------------------------------------------ binding
   async function connectCode(path) {
     const code = randomCode();
     await kv.put(`code:${code}`, path, { ttl: CODE_TTL });
-    return { code, start_url: `https://t.me/${deps.botUsername}?start=${code}`, bot_username: deps.botUsername };
+    const bot = await deps.username();
+    return { code, start_url: `https://t.me/${bot}?start=${code}`, bot_username: bot };
   }
 
   async function bindChannel(chat, owner, path) {
@@ -238,7 +240,7 @@ export function createBot(deps) {
       await kv.del(`code:${arg}`);
       await kv.put(`user:${user.id}`, path);
       const g = await glossary(path);
-      await say(user.id, s.linked(g.title), { reply_markup: { inline_keyboard: [[{ text: s.addBtn, url: addToChannelUrl() }]] } });
+      await say(user.id, s.linked(g.title), { reply_markup: { inline_keyboard: [[{ text: s.addBtn, url: await addToChannelUrl() }]] } });
       for (const c of (await kv.get(`pending:${user.id}`)) || []) await bindChannel(c, user, path);
       await kv.del(`pending:${user.id}`);
       return;
@@ -265,5 +267,5 @@ export function createBot(deps) {
     }
   }
 
-  return { handleUpdate, connectCode, status, resync, cron, glossary };
+  return { handleUpdate, connectCode, status, resync, cron, glossary, username: deps.username };
 }

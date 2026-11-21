@@ -1,20 +1,21 @@
 // Cloudflare Worker entry for the channel auto-link bot.
 //
-// Bindings (wrangler.toml / secrets):
-//   KV               KV namespace
-//   BOT_TOKEN        secret: token from @BotFather
-//   WEBHOOK_SECRET   secret: random string, verifies requests come from Telegram
-//   BOT_USERNAME     var: the bot's @username (without @)
+// Only one secret is needed: BOT_TOKEN (from @BotFather). The webhook secret is
+// derived from it, so nothing else has to be configured.
 //
 // Routes:
-//   POST /telegram             Telegram webhook
-//   GET  /setup?secret=...     registers the webhook + commands (run once after deploy)
+//   POST /telegram             Telegram webhook (verified with the derived secret)
+//   GET  /setup                (re)registers the webhook to this Worker. Idempotent and safe
+//                              to call by anyone: it can only point the bot at itself.
+//   GET  /api/info             {bot_username}
 //   POST /api/connect          {index_path} -> {start_url}   (used by the web app)
 //   GET  /api/status?index=... -> {channels}
 //   POST /api/changed          {index_path}  glossary was edited: update old posts now
 // Cron: re-applies glossary changes made elsewhere (CLI, agents, telegra.ph).
 
 import { createBot } from "./handler.js";
+
+const ALLOWED_UPDATES = ["message", "channel_post", "edited_channel_post", "my_chat_member"];
 
 function kvAdapter(ns) {
   return {
@@ -34,19 +35,36 @@ function kvAdapter(ns) {
   };
 }
 
+async function webhookSecret(env) {
+  if (env.WEBHOOK_SECRET) return env.WEBHOOK_SECRET;
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(`webhook:${env.BOT_TOKEN}`));
+  return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0")).join("").slice(0, 48);
+}
+
+function telegram(env) {
+  const base = (env.TELEGRAM_API || "https://api.telegram.org").replace(/\/$/, "");
+  return async (method, params = {}) => {
+    const r = await fetch(`${base}/bot${env.BOT_TOKEN}/${method}`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(params),
+    });
+    const data = await r.json();
+    if (!data.ok) throw new Error(data.description || `${method} failed`);
+    return data.result;
+  };
+}
+
+let usernameCache = null;
+
 function bot(env) {
+  const tg = telegram(env);
   return createBot({
     kv: kvAdapter(env.KV),
-    botUsername: env.BOT_USERNAME,
-    async tg(method, params) {
-      const r = await fetch(`https://api.telegram.org/bot${env.BOT_TOKEN}/${method}`, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify(params),
-      });
-      const data = await r.json();
-      if (!data.ok) throw new Error(data.description || `${method} failed`);
-      return data.result;
+    tg,
+    async username() {
+      if (!usernameCache) usernameCache = (await tg("getMe")).username;
+      return usernameCache;
     },
     async getPage(path) {
       const r = await fetch(`https://api.telegra.ph/getPage?path=${encodeURIComponent(path)}&return_content=true`);
@@ -71,33 +89,26 @@ export default {
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
     if (request.method === "OPTIONS") return new Response(null, { headers: CORS });
+    if (!env.BOT_TOKEN) return json({ error: "BOT_TOKEN secret is not set" }, 500);
     const b = bot(env);
 
     if (url.pathname === "/telegram" && request.method === "POST") {
-      if (request.headers.get("x-telegram-bot-api-secret-token") !== env.WEBHOOK_SECRET) return new Response("forbidden", { status: 403 });
+      if (request.headers.get("x-telegram-bot-api-secret-token") !== (await webhookSecret(env))) return new Response("forbidden", { status: 403 });
       const update = await request.json();
-      // Answer Telegram right away; do the work in the background.
       ctx.waitUntil(b.handleUpdate(update).catch((e) => console.error("update", e)));
       return new Response("ok");
     }
 
     if (url.pathname === "/setup") {
-      if (url.searchParams.get("secret") !== env.WEBHOOK_SECRET) return new Response("forbidden", { status: 403 });
-      const hook = `${url.origin}/telegram`;
-      const tg = (m, p) => fetch(`https://api.telegram.org/bot${env.BOT_TOKEN}/${m}`, {
-        method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(p),
-      }).then((r) => r.json());
-      const results = {
-        webhook: await tg("setWebhook", {
-          url: hook,
-          secret_token: env.WEBHOOK_SECRET,
-          allowed_updates: ["message", "channel_post", "edited_channel_post", "my_chat_member"],
-        }),
-        commands: await tg("setMyCommands", { commands: [{ command: "status", description: "Connected channels" }] }),
-        me: await tg("getMe", {}),
-      };
-      return json(results);
+      const tg = telegram(env);
+      const me = await tg("getMe");
+      await tg("setWebhook", { url: `${url.origin}/telegram`, secret_token: await webhookSecret(env), allowed_updates: ALLOWED_UPDATES });
+      await tg("setMyCommands", { commands: [{ command: "status", description: "Connected channels" }] });
+      await tg("setMyCommands", { commands: [{ command: "status", description: "ערוצים מחוברים" }], language_code: "he" });
+      return json({ ok: true, bot: me.username, webhook: `${url.origin}/telegram` });
     }
+
+    if (url.pathname === "/api/info") return json({ bot_username: await b.username() });
 
     if (url.pathname === "/api/connect" && request.method === "POST") {
       const { index_path } = await request.json().catch(() => ({}));
@@ -109,7 +120,7 @@ export default {
     if (url.pathname === "/api/status") {
       const path = url.searchParams.get("index");
       if (!validPath(path)) return json({ error: "index required" }, 400);
-      return json({ bot_username: env.BOT_USERNAME, channels: await b.status(path) });
+      return json({ channels: await b.status(path) });
     }
 
     if (url.pathname === "/api/changed" && request.method === "POST") {
@@ -119,7 +130,7 @@ export default {
       return json({ ok: true });
     }
 
-    return new Response("Telegraph Glossary bot", { headers: CORS });
+    return new Response("Telegraph Glossary bot. See https://github.com/NehoraiHadad/telegraph-glossary", { headers: CORS });
   },
 
   async scheduled(event, env, ctx) {

@@ -81,6 +81,9 @@ def main(argv: list[str] | None = None) -> None:
             s.add_argument("--chat")
             s.add_argument("--dry-run", action="store_true")
 
+    s = sub.add_parser("channel", help="auto-link bot: show connected channels, or `channel connect`")
+    s.add_argument("action", nargs="?", choices=["status", "connect"], default="status")
+
     sub.add_parser("mcp", help="run the MCP server (stdio) for AI agents")
 
     a = p.parse_args(argv)
@@ -126,6 +129,16 @@ def main(argv: list[str] | None = None) -> None:
         aliases = _aliases(a.aliases)
         e = g.save_term(a.name or entry.term, definition, entry.aliases if aliases is None else aliases, original=entry.term)
         print(f"Updated {e.term}: {e.url}")
+    elif a.cmd == "channel":
+        from . import autolink
+
+        g = _glossary()
+        if a.action == "connect":
+            r = autolink.connect(g.index_path)
+            print(f"Open this link, press Start, then 'Add to channel':\n{r['start_url']}")
+        else:
+            chans = autolink.status(g.index_path)
+            print("\n".join(c["title"] for c in chans) or "No connected channels. Run: telegraph-glossary channel connect")
     elif a.cmd == "remove":
         print("Removed" if _glossary().remove_term(a.term) else "Not found")
     elif a.cmd in ("link", "send"):

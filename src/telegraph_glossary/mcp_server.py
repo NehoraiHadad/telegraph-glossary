@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import functools
+import logging
 from typing import Optional
 
 from . import config
 from .glossary import APP_URL, Glossary
 from .linker import link_text as _link
+from . import autolink
 from .telegram import MAX_LEN, discover_chats, send_html
 
 try:  # mcp >= 2
@@ -18,15 +20,21 @@ except ImportError:  # mcp 1.x
     from mcp.server.fastmcp.exceptions import ToolError  # type: ignore[no-redef]
 
 INSTRUCTIONS = """\
-Telegraph Glossary: a personal glossary whose terms are Telegraph pages, used to
-add explanatory links to Telegram posts.
+Telegraph Glossary: the user's glossary. Each term is a short explanation page on
+Telegraph, and terms in the user's Telegram posts become links to those pages.
 
-Typical flow when the user hands you a post:
-1. call link_text(text) - it finds glossary terms and returns Telegram HTML with links.
-2. look at the post for jargon that is NOT in the glossary; offer to add it with
-   add_term (short, clear definition in the post's language; Markdown allowed).
-3. when the user approves, call send_to_telegram(text) or give them the HTML.
-Never invent glossary URLs - only use URLs returned by these tools.
+How the user publishes (check with glossary_info):
+- channel_connected=true: a bot adds the links to every channel post automatically,
+  and updates older posts when terms change. Your job is mostly the glossary itself.
+- otherwise: use link_text to produce the linked post, or send_to_telegram if a bot
+  token is configured, or help them connect a channel with connect_channel.
+
+Good habits:
+- When the user shares a post, call link_text, then point out jargon that is NOT in the
+  glossary and offer to add it.
+- Definitions: 1-3 plain sentences in the post's language. Markdown is allowed.
+  Add aliases for other forms readers will write (plural, English/Hebrew name, acronym).
+- Ask before removing terms or sending messages. Never invent glossary URLs.
 """
 
 mcp = _Server("telegraph-glossary", instructions=INSTRUCTIONS)
@@ -72,12 +80,20 @@ def _entries(g: Glossary) -> list[dict]:
 def glossary_info() -> dict:
     """Glossary title, public index page, number of terms and whether Telegram sending is configured."""
     g = _g()
+    channels = []
+    if autolink.available():
+        try:
+            channels = autolink.status(g.index_path)
+        except RuntimeError:
+            pass
     return {
         "title": g.title,
         "index_url": g.index_url,
         "term_count": len(g.terms),
-        "telegram_configured": bool(config.get("bot_token")),
-        "default_chat": config.get("chat_id"),
+        "channel_connected": bool(channels),
+        "channels": [c["title"] for c in channels],
+        "auto_link_available": autolink.available(),
+        "own_bot_configured": bool(config.get("bot_token")),
         "web_app": APP_URL,
     }
 
@@ -163,7 +179,45 @@ def send_to_telegram(
     return {"sent": True, "chat": chat, "message_id": msg.get("message_id"), "found": r.found}
 
 
+@tool
+def connect_channel() -> dict:
+    """Get a link that connects one of the user's Telegram channels to this glossary.
+    After that, the bot adds the links to every post automatically. Give the user the link
+    and the steps; you cannot do the Telegram part for them."""
+    g = _g()
+    r = autolink.connect(g.index_path)
+    return {
+        "link": r["start_url"],
+        "steps": [
+            "Open the link and press Start in Telegram.",
+            "Press 'Add to channel' in the bot's reply and pick the channel (keep the 'Edit messages' right).",
+            "Done. Check with channel_status. Older posts can be forwarded to the bot to get links.",
+        ],
+        "bot": "@" + r["bot_username"],
+    }
+
+
+@tool
+def channel_status() -> dict:
+    """Channels where the bot adds glossary links automatically."""
+    g = _g()
+    if not autolink.available():
+        return {"available": False, "channels": []}
+    return {"available": True, "bot": "@" + autolink.info()["bot_username"], "channels": autolink.status(g.index_path)}
+
+
+@mcp.prompt()
+def link_post(post: str) -> str:
+    """Link glossary terms in a post and suggest missing ones."""
+    return (
+        "Here is a Telegram post. Call link_text on it and show me which terms got links. "
+        "Then list jargon in it that is missing from my glossary, each with a suggested 1-2 sentence "
+        "definition in the post's language, and ask which ones to add.\n\n" + post
+    )
+
+
 def main() -> None:
+    logging.getLogger("httpx").setLevel(logging.WARNING)  # keep agent logs readable
     mcp.run()
 
 

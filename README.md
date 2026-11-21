@@ -1,137 +1,85 @@
 # Telegraph Glossary
 
-**Write a Telegram post, and terms from your glossary become links to short explanation pages.**
+**Every term in your Telegram posts, explained in one tap.**
 
-Each term is a [Telegraph](https://telegra.ph) page, so explanations open instantly inside
-Telegram (Instant View). Free, no sign-up, no server.
+You build a glossary once. Each term becomes a short [Telegraph](https://telegra.ph) page
+(it opens instantly inside Telegram), and terms in your posts link to it.
 
-> כותבים פוסט, והמונחים מהמילון שלך הופכים לקישורים לדפי הסבר קצרים שנפתחים ישר בטלגרם.
+> בונים מילון פעם אחת, ומונחים בפוסטים שלך בטלגרם מקושרים לדף הסבר קצר.
 
-## Ways to use it
+**Web app:** https://nehoraihadad.github.io/telegraph-glossary/
 
-| | For | How |
-|---|---|---|
-| **Channel auto-link** | everyone with a channel | connect once; links are added to every post automatically ([bot/](bot/)) |
-| **Web app** | everyone | open **https://nehoraihadad.github.io/telegraph-glossary/** |
-| **AI agents** | Claude Code, Codex, Antigravity, Cursor, Claude Desktop… | MCP server, see below |
-| **CLI / Python** | scripts, automation | `telegraph-glossary` command, or `import telegraph_glossary` |
+## For users
 
-All three work on **the same glossary**. Copy your key from the web app's settings and use it anywhere.
+1. **Create a glossary.** Give it a name. No sign-up.
+2. **Add terms.** Each term has a short explanation, plus *other forms* such as the plural, the English name or an acronym.
+   Hebrew prefixes (בפייתון, ל-API) are matched automatically.
+3. **Connect your channel** (Channel tab). Press Start in the bot and add it to the channel.
+   From then on you post as usual, and the bot adds the links within seconds. When you add a term,
+   earlier posts are updated too. To update older posts, forward them to the bot.
+4. **Save your key** (Settings). It is the only way back to your glossary.
 
-## Web app
+No channel? The **Post** tab shows which terms will be linked and copies the post with its links.
 
-1. **Create a glossary.** Give it a name. A Telegraph account is created in the background.
-2. **Add terms.** A term has a name, other forms to link (plural, English name, abbreviation)
-   and a short explanation (Markdown).
-3. **Write.** Terms are detected automatically, including Hebrew prefixes (`בפייתון`, `ל-API`).
-   Click a detected term to turn its link off. Select a word in your text to add it as a new term.
-4. **Send or copy.** *Copy* puts the text on the clipboard with its links (HTML + plain text).
-   With your own bot (Settings → Send to Telegram, about 2 minutes with @BotFather), *Send* posts
-   straight to your channel. The app finds the channels your bot was added to, so you never need
-   to look up a chat ID.
+## For AI agents
 
-Your **key** (the Telegraph access token) is kept in your browser only. Back it up from
-Settings: download it, or copy a link that opens the glossary on another device.
-Whoever has the key can edit the glossary.
-
-## Channel auto-link
-
-Settings → **Auto-link my channel** → press Start in the bot → add it to your channel as an admin.
-From then on you simply post in Telegram: within seconds the bot edits the post and links every
-glossary term, keeping your formatting. When you add or remove a term, earlier posts are updated
-too. To update posts from before the bot joined, forward them to the bot.
-
-The bot only knows which channel uses which glossary. It never gets your key.
-Deployment instructions are in [bot/README.md](bot/README.md).
-
-## Use it from AI agents
-
-Requires [uv](https://docs.astral.sh/uv/). Replace `<KEY>` with your key (Settings → Your key in
-the web app, or run `telegraph-glossary init` to create a glossary from the terminal).
-
-**Claude Code**
+Any MCP-capable agent can manage the glossary: Claude Code, Codex, Gemini CLI, Antigravity,
+Cursor, Claude Desktop. The **AI agents** tab in the web app gives a ready command with your key.
+It requires [uv](https://docs.astral.sh/uv/).
 
 ```bash
-claude mcp add telegraph-glossary -e TELEGRAPH_ACCESS_TOKEN=<KEY> -- \
+claude mcp add telegraph-glossary --scope user -e TELEGRAPH_ACCESS_TOKEN=<KEY> -- \
   uvx --from git+https://github.com/NehoraiHadad/telegraph-glossary telegraph-glossary mcp
 ```
 
-**Codex**
+Then ask, for example: *"Which terms from this post are missing from my glossary?"*
+
+| Tool | What it does |
+|---|---|
+| `glossary_info` | title, public page, term count, whether a channel is auto-linked |
+| `list_terms` `get_term` `add_term` `update_term` `remove_term` | manage terms (definitions in Markdown) |
+| `link_text` | the post as Telegram HTML with links, plus the terms found |
+| `connect_channel` `channel_status` | connect a channel to the auto-link bot |
+| `send_to_telegram` | send through your own bot (`TELEGRAM_BOT_TOKEN`) |
+| prompt `link_post` | link a post and suggest missing terms |
+
+Agents that browse can read [`llms.txt`](web/llms.txt). The CLI does the same from a terminal:
+`telegraph-glossary init | add | list | link | channel connect | ...` (`tgg` for short).
+
+## For the owner: deploy
+
+The site and the bot deploy together from `.github/workflows/deploy.yml` on every push to `main`.
+
+1. **Settings → Pages → Source: GitHub Actions.** This alone publishes the site.
+2. For the auto-link bot, add **Settings → Secrets → Actions**:
+   - `BOT_TOKEN`: from @BotFather (`/newbot`)
+   - `CLOUDFLARE_API_TOKEN`: Cloudflare → My Profile → API Tokens → template *Edit Cloudflare Workers*
+   - `CLOUDFLARE_ACCOUNT_ID`: only if that token can see more than one account
+
+   The workflow creates the KV store, deploys the Worker, points the bot's webhook at it and tells
+   the site where it is. Nothing else to configure. Details: [bot/README.md](bot/README.md).
+
+## Development
+
+```
+web/       static web app (no build step)
+  core/    linker, Telegram entities, Markdown <-> Telegraph, storage (shared with bot/)
+bot/       auto-link bot, Cloudflare Worker
+src/       Python package: CLI + MCP server
+spec/      linker cases both implementations must pass
+e2e/       full local run: site + Worker + fake Telegram, in a real browser
+docs/      FORMAT.md, how a glossary is stored on Telegraph
+legacy/    the previous Streamlit app
+```
 
 ```bash
-codex mcp add telegraph-glossary --env TELEGRAPH_ACCESS_TOKEN=<KEY> -- \
-  uvx --from git+https://github.com/NehoraiHadad/telegraph-glossary telegraph-glossary mcp
+node --test web/tests/*.mjs bot/tests/*.mjs     # JS units + bot flows
+pip install -e . pytest && pytest               # Python
+e2e/run.sh                                      # end to end (Playwright + wrangler)
+python -m http.server -d web                    # run the site locally
 ```
 
-**Anything else that speaks MCP** (Antigravity, Cursor, Claude Desktop, Gemini CLI…):
-
-```json
-{
-  "mcpServers": {
-    "telegraph-glossary": {
-      "command": "uvx",
-      "args": ["--from", "git+https://github.com/NehoraiHadad/telegraph-glossary", "telegraph-glossary", "mcp"],
-      "env": {
-        "TELEGRAPH_ACCESS_TOKEN": "<KEY>",
-        "TELEGRAM_BOT_TOKEN": "optional, for send_to_telegram",
-        "TELEGRAM_CHAT_ID": "optional default, e.g. @mychannel"
-      }
-    }
-  }
-}
-```
-
-Tools: `glossary_info`, `list_terms`, `get_term`, `add_term`, `update_term`, `remove_term`,
-`link_text`, `send_to_telegram` (has `dry_run`).
-
-Then just talk to the agent: *"Here's my post. Link the glossary terms, suggest definitions for
-jargon that's missing, and send it to my channel."*
-
-## CLI
-
-```bash
-pip install git+https://github.com/NehoraiHadad/telegraph-glossary   # or: uvx --from ... telegraph-glossary
-
-telegraph-glossary init --title "My glossary"     # new glossary (or: login <KEY>)
-tgg add API -a "APIs,ממשק תכנות" -d "**Application Programming Interface**"
-tgg list
-tgg link post.txt                  # Telegram HTML to stdout (--format markdown)
-tgg telegram --bot-token 123:ABC --chat @mychannel
-tgg chats                          # chats your bot has seen
-tgg send post.txt --dry-run
-```
-
-Settings live in `~/.config/telegraph-glossary/config.json`. The environment variables
-`TELEGRAPH_ACCESS_TOKEN`, `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` take precedence.
-
-## How it's built
-
-```
-web/            static web app (no build step), deployed to GitHub Pages
-  core/         linker, entity linking, Markdown <-> Telegraph nodes, storage. Plain ES modules.
-bot/            channel auto-link bot (Cloudflare Worker), reuses web/core
-src/telegraph_glossary/
-                the same core in Python + CLI + MCP server
-spec/           shared test cases both linkers must pass
-docs/FORMAT.md  how a glossary is stored on Telegraph
-legacy/         the previous Streamlit app (kept for reference)
-```
-
-Both Telegraph and the Telegram Bot API allow browser (CORS) requests, so the web app talks
-to them directly. Nothing goes through a backend.
-
-```bash
-node --test web/tests/*.mjs bot/tests/*.mjs   # web core + bot
-pip install -e . pytest && pytest
-python -m http.server -d web    # run the web app locally
-```
-
-**Deploying the web app:** in the repo settings, set *Pages → Source* to *GitHub Actions*.
-`.github/workflows/pages.yml` publishes `web/` on every push to `main`.
-
-## Related
-
-[telegraph-mcp](https://github.com/NehoraiHadad/telegraph-mcp) /
-[telegraph-mcp-py](https://github.com/NehoraiHadad/telegraph-mcp-py): general Telegraph MCP servers ·
-[telegraph-js](https://github.com/NehoraiHadad/telegraph-js) /
-[telegraph-py](https://github.com/NehoraiHadad/telegraph-py): Telegraph API clients.
+Related: [telegraph-mcp](https://github.com/NehoraiHadad/telegraph-mcp),
+[telegraph-mcp-py](https://github.com/NehoraiHadad/telegraph-mcp-py),
+[telegraph-js](https://github.com/NehoraiHadad/telegraph-js),
+[telegraph-py](https://github.com/NehoraiHadad/telegraph-py).
