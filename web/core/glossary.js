@@ -65,6 +65,7 @@ export class Glossary {
     this.indexPath = null;
     this.title = "";
     this.terms = [];
+    this.settleMs = 1500; // see updateIndex
   }
 
   api(method, params = {}) {
@@ -150,22 +151,24 @@ export class Glossary {
   }
 
   /**
-   * Change the index without losing someone else's concurrent edit (another tab, an AI agent):
-   * re-read, apply, and only write if nobody changed the index in between; otherwise retry.
+   * Change the index without losing someone else's concurrent edit (another tab, an AI agent).
+   * Telegraph has no compare-and-swap: two writers that read the same index both write, and the
+   * later write drops the earlier change. So each writer writes, waits for writes already in
+   * flight to land, re-reads, and re-applies its change on top if it was dropped. `apply` must be
+   * idempotent (replace by path, filter by path), so re-applying never duplicates.
    */
   async updateIndex(apply, attempts = 4) {
     const sig = (terms) => JSON.stringify(terms.map((t) => [t.path, t.term, t.aliases]).sort());
+    const missing = () => sig(apply(this.terms)) !== sig(this.terms);
+    await this.refresh();
     for (let i = 0; i < attempts; i++) {
-      await this.refresh();
-      const before = sig(this.terms);
-      const next = apply(this.terms);
-      const latest = parseIndex((await call("getPage", { path: this.indexPath, return_content: true }, this.fetch)).content);
-      if (sig(latest) !== before) continue; // changed meanwhile: start over from the fresh copy
-      this.terms = next;
+      if (!missing()) return;
+      this.terms = apply(this.terms);
       await this.saveIndex();
-      return;
+      await new Promise((r) => setTimeout(r, this.settleMs));
+      await this.refresh();
     }
-    throw new Error("The glossary is being edited somewhere else right now. Try again.");
+    if (missing()) throw new Error("The glossary is being edited somewhere else right now. Try again.");
   }
 
   async removeTerm(term) {
@@ -179,6 +182,7 @@ export class Glossary {
   }
 
   async rename(title) {
+    await this.refresh(); // don't write back a stale term list (terms added elsewhere since loading)
     this.title = title;
     await this.saveIndex();
   }

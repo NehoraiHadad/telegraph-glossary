@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+import time
 from dataclasses import asdict, dataclass, field
 from typing import Any, Optional
 from urllib.parse import quote, unquote
@@ -103,6 +104,7 @@ class Glossary:
         self.index_path: Optional[str] = None
         self.title = ""
         self.terms: list[Entry] = []
+        self.settle_s = 1.5  # see update_index
 
     # -- low level -----------------------------------------------------------
     def _call(self, method: str, params: Optional[dict] = None, auth: bool = True) -> Any:
@@ -208,23 +210,29 @@ class Glossary:
         return entry
 
     def update_index(self, apply, attempts: int = 4) -> None:
-        """Change the index without losing a concurrent edit (web app, another agent):
-        re-read, apply, and only write if nobody changed it in between; otherwise retry."""
+        """Change the index without losing a concurrent edit (web app, another agent).
+
+        Telegraph has no compare-and-swap: two writers that read the same index both write, and
+        the later write drops the earlier change. So write, wait for writes already in flight to
+        land, re-read, and re-apply the change on top if it was dropped. `apply` must be
+        idempotent (replace by path, filter by path), so re-applying never duplicates."""
 
         def sig(terms: list[Entry]) -> list:
             return sorted([t.path, t.term, t.aliases] for t in terms)
 
+        def missing() -> bool:
+            return sig(apply(list(self.terms))) != sig(self.terms)
+
+        self.refresh()
         for _ in range(attempts):
-            self.refresh()
-            before = sig(self.terms)
-            new_terms = apply(list(self.terms))
-            latest = parse_index(self._call("getPage", {"path": self.index_path, "return_content": True}, auth=False).get("content", []))
-            if sig(latest) != before:
-                continue
-            self.terms = new_terms
+            if not missing():
+                return
+            self.terms = apply(list(self.terms))
             self.save_index()
-            return
-        raise RuntimeError("The glossary is being edited somewhere else right now. Try again.")
+            time.sleep(self.settle_s)
+            self.refresh()
+        if missing():
+            raise RuntimeError("The glossary is being edited somewhere else right now. Try again.")
 
     def remove_term(self, term: str) -> bool:
         self.refresh()
