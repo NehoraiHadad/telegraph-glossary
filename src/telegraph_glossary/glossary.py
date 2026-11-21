@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 from dataclasses import asdict, dataclass, field
 from typing import Any, Optional
@@ -15,6 +16,9 @@ from .markdown import markdown_to_nodes, nodes_to_markdown
 API = "https://api.telegra.ph"
 APP_URL = "https://nehoraihadad.github.io/telegraph-glossary/"
 ALIAS_SEP = " · "
+# Channel auto-link bot (bot/). When set, edits notify it so channel posts update right away
+# (otherwise the bot picks changes up on its 15-minute schedule).
+BOT_API = os.environ.get("TELEGRAPH_GLOSSARY_BOT_API", "")
 
 
 class TelegraphError(Exception):
@@ -155,6 +159,11 @@ class Glossary:
 
     def save_index(self) -> None:
         self._call("editPage", {"path": self.index_path, "title": self.title, **self._meta(), "content": build_index(self.terms)})
+        if BOT_API:
+            try:
+                self.http.post(f"{BOT_API.rstrip('/')}/api/changed", json={"index_path": self.index_path}, timeout=5)
+            except httpx.HTTPError:
+                pass
 
     # -- terms ---------------------------------------------------------------
     def find(self, term: str) -> Optional[Entry]:

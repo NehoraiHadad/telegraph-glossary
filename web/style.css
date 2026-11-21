@@ -110,6 +110,9 @@ main { max-width: 1180px; margin: 0 auto; padding: 20px 16px 60px; }
 /* ---------- write ---------- */
 .write { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; align-items: start; }
 @media (max-width: 860px) { .write { grid-template-columns: 1fr; } }
+.write.has-banner { grid-template-rows: auto auto; }
+.banner { grid-column: 1 / -1; margin: 0; background: var(--accent-soft); border: 1px solid color-mix(in srgb, var(--accent) 35%, transparent); border-radius: 12px; padding: 10px 14px; font-size: .95rem; }
+details > summary { cursor: pointer; }
 .pane-label { font-size: .8rem; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); font-weight: 600; margin: 0 0 8px; }
 .editor textarea { min-height: 300px; font-size: 1.05rem; line-height: 1.6; padding: 14px 16px; border-radius: var(--radius); }
 .chips-wrap { margin-top: 14px; }

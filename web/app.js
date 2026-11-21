@@ -3,6 +3,7 @@ import { Glossary, APP_URL } from "./core/glossary.js";
 import { findTerms, toTelegramHtml, toMarkdown, toPlain, escapeHtml } from "./core/linker.js";
 import { markdownToNodes, nodesToHtml } from "./core/markdown.js";
 import * as tg from "./core/telegram.js";
+import { BOT } from "./config.js";
 
 const REPO = "git+https://github.com/NehoraiHadad/telegraph-glossary";
 
@@ -22,6 +23,7 @@ const state = {
   mode: store.get("mode", "first"),
   bot: store.get("bot", null), // { token, username }
   chats: store.get("chats", []), // [{id, name}]
+  autoChannels: store.get("autoChannels", []), // channels the auto-link bot serves
   chatId: store.get("chatId", null),
   selection: "",
   query: "",
@@ -60,6 +62,37 @@ async function busy(btn, fn) {
   try { return await fn(); } catch (e) { fail(e); } finally { btn.disabled = false; btn.innerHTML = label; }
 }
 
+function ready(g) {
+  state.glossary = g;
+  render();
+  refreshAuto();
+}
+
+// ---------------------------------------------------------------- auto-link bot
+async function botApi(path, body) {
+  const res = await fetch(BOT.api.replace(/\/$/, "") + path, body
+    ? { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) }
+    : {});
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+  return data;
+}
+
+async function refreshAuto() {
+  if (!BOT.api || !state.glossary) return;
+  try {
+    const { channels } = await botApi(`/api/status?index=${encodeURIComponent(state.glossary.indexPath)}`);
+    const changed = JSON.stringify(channels) !== JSON.stringify(state.autoChannels);
+    state.autoChannels = channels; store.set("autoChannels", channels);
+    if (changed && state.view === "write" && !document.querySelector("dialog")) render();
+  } catch (e) { console.warn("auto-link status", e); }
+}
+
+/** Tell the bot the glossary changed so it updates earlier posts right away. */
+function notifyChanged() {
+  if (BOT.api && state.autoChannels.length) botApi("/api/changed", { index_path: state.glossary.indexPath }).catch(() => {});
+}
+
 function applyLang() {
   document.documentElement.lang = state.lang;
   document.documentElement.dir = state.lang === "he" ? "rtl" : "ltr";
@@ -78,8 +111,7 @@ async function boot() {
   if (!state.token) return renderWelcome();
   $app.replaceChildren(h("div", { class: "center" }, h("div", {}, h("span", { class: "spin" }), " ", t("loading"))));
   try {
-    state.glossary = await new Glossary(state.token).load();
-    render();
+    ready(await new Glossary(state.token).load());
   } catch (e) {
     fail(e);
     if (/ACCESS_TOKEN_INVALID/.test(e.message)) { store.set("token", null); state.token = null; }
@@ -97,7 +129,7 @@ function renderWelcome() {
 
   const createBtn = h("button", { class: "btn primary big", onclick: (e) => busy(e.currentTarget, async () => {
     const g = await Glossary.create({ title: name.value.trim() || t("glossaryNamePh"), authorName: author.value.trim() });
-    state.token = g.token; store.set("token", g.token); state.glossary = g; render();
+    state.token = g.token; store.set("token", g.token); ready(g);
   }) }, t("create"));
 
   $app.replaceChildren(h("div", { class: "welcome" },
@@ -105,7 +137,7 @@ function renderWelcome() {
     h("h1", {}, t("appName")),
     h("p", { class: "tagline" }, t("tagline")),
     h("div", { class: "demo-bubble", html: t("demo").replace(/<a>/g, '<a href="#" tabindex="-1" onclick="return false">') }),
-    h("ul", { class: "points" }, t("welcomePoints").map((p) => h("li", {}, p))),
+    h("ul", { class: "points" }, t("welcomePoints").filter((_, i) => BOT.api || i !== 1).map((p) => h("li", {}, p))),
     h("div", { class: "card" },
       h("div", { class: "field" }, h("label", { for: "gname" }, t("glossaryName")), name),
       h("div", { class: "field" }, h("label", { for: "gauthor" }, t("authorName")), author),
@@ -119,7 +151,7 @@ function renderWelcome() {
 async function connectKey(key) {
   if (!key) return;
   const g = await new Glossary(key).load();
-  state.token = key; store.set("token", key); state.glossary = g; render();
+  state.token = key; store.set("token", key); ready(g);
 }
 
 function langSwitch(rerender) {
@@ -198,7 +230,10 @@ function renderWrite() {
   ta.addEventListener("keyup", onSel);
   ta.addEventListener("mouseup", onSel);
 
-  const view = h("div", { class: "write" },
+  const banner = state.autoChannels.length
+    ? h("p", { class: "banner" }, "✨ ", t("autoBanner", state.autoChannels.map((c) => c.title).join(", ")))
+    : null;
+  const view = h("div", { class: "write" + (banner ? " has-banner" : "") }, banner,
     h("div", { class: "editor" },
       h("p", { class: "pane-label" }, t("tabWrite")),
       ta,
@@ -233,7 +268,7 @@ function renderSendBar(bar, segments, len) {
       toast(t("sent"));
     }) }, picker ? t("sendShort") : t("send", current.name)), picker];
   } else {
-    send = [h("button", { class: "btn", onclick: () => openSettings("telegram") }, t("connectTelegram"))];
+    send = state.autoChannels.length ? [] : [h("button", { class: "btn", onclick: () => openSettings(BOT.api ? "auto" : "telegram") }, t("connectTelegram"))];
   }
   bar.replaceChildren(...send.filter(Boolean), copyBtn, h("span", { class: "spacer" }), mdBtn, clearBtn);
 }
@@ -289,7 +324,7 @@ function dialog(title, body, foot) {
   const d = h("dialog", { "aria-label": title },
     h("div", { class: "dlg-head" }, h("h2", {}, title), h("span", { class: "spacer" }),
       h("button", { class: "btn ghost", "aria-label": t("close"), onclick: () => d.close() }, "✕")),
-    h("div", { class: "dlg-body" }, body),
+    h("div", { class: "dlg-body" }, [].concat(body).filter(Boolean)),
     foot ? h("div", { class: "dlg-foot" }, foot) : null);
   d.addEventListener("close", () => d.remove());
   document.body.append(d);
@@ -323,13 +358,14 @@ async function openTermDialog(entry, prefill = "") {
 
   const saveBtn = h("button", { class: "btn primary", onclick: (e) => busy(e.currentTarget, async () => {
     await g.saveTerm({ term: term.value, aliases: aliases.value.split(","), definition: def.value }, entry ? entry.term : null);
+    notifyChanged();
     toast(t("saved"));
     state.selection = "";
     d.close(); render();
   }) }, t("save"));
   const delBtn = entry ? h("button", { class: "btn danger", onclick: (e) => {
     if (!confirm(t("confirmDelete", entry.term))) return;
-    busy(e.currentTarget, async () => { await g.removeTerm(entry.term); toast(t("deleted")); d.close(); render(); });
+    busy(e.currentTarget, async () => { await g.removeTerm(entry.term); notifyChanged(); toast(t("deleted")); d.close(); render(); });
   } }, t("delete")) : null;
 
   const d = dialog(entry ? entry.term : t("newTerm"), [
@@ -402,7 +438,35 @@ function openSettings(focus) {
     ].filter(Boolean));
   };
   drawTg();
-  const tgSec = sec("telegram", t("sTelegram"), tgBody);
+  const tgSec = BOT.api
+    ? h("section", { class: "set", id: "set-telegram" },
+      h("details", { open: !!state.bot || focus === "telegram" }, h("summary", {}, h("strong", {}, t("sManual"))), h("div", { style: "margin-top:10px" }, tgBody)))
+    : sec("telegram", t("sTelegram"), tgBody);
+
+  // auto-link bot
+  const autoList = h("div", {});
+  const drawAuto = () => autoList.replaceChildren(state.autoChannels.length
+    ? h("div", {}, h("p", { class: "small", style: "margin:0 0 6px" }, t("autoConnected")),
+      h("ul", { class: "chat-list" }, state.autoChannels.map((c) => h("li", {}, "✅ ", c.title))))
+    : h("p", { class: "muted small", style: "margin:0" }, t("autoNone")));
+  drawAuto();
+  const autoSec = BOT.api ? sec("auto", t("sAuto"),
+    h("p", { class: "small", style: "margin:0" }, t("autoIntro")),
+    h("p", { class: "muted small", style: "margin:0" }, t("autoStep")),
+    h("div", { class: "row" },
+      h("button", { class: "btn primary", onclick: (e) => {
+        // open the tab synchronously (popup blockers), then point it at the bot
+        const win = window.open("about:blank", "_blank");
+        busy(e.currentTarget, async () => {
+          try {
+            const { start_url } = await botApi("/api/connect", { index_path: g.indexPath });
+            if (win) win.location.href = start_url; else location.href = start_url;
+          } catch (err) { win?.close(); throw err; }
+        });
+      } }, t("autoConnect")),
+      h("button", { class: "btn ghost small", onclick: (e) => busy(e.currentTarget, async () => { await refreshAuto(); drawAuto(); }) }, t("autoRefresh"))),
+    autoList,
+    h("p", { class: "muted small", style: "margin:0" }, t("autoOld"))) : null;
 
   // agents
   let revealed = false;
@@ -438,11 +502,11 @@ function openSettings(focus) {
   const langSec = sec("lang", t("sLanguage"), h("div", { class: "seg" },
     ["he", "en"].map((l) => h("button", { type: "button", "aria-pressed": String(state.lang === l), onclick: () => { state.lang = l; store.set("lang", l); applyLang(); d.close(); render(); openSettings(); } }, l === "he" ? "עברית" : "English"))));
 
-  const d = dialog(t("settings"), [glossarySec, tgSec, linksSec, agentsSec, keySec, langSec,
+  const d = dialog(t("settings"), [autoSec, glossarySec, tgSec, linksSec, agentsSec, keySec, langSec,
     h("section", { class: "set" }, h("button", { class: "btn danger", onclick: () => {
       if (!confirm(t("confirmSignOut"))) return;
-      ["token", "draft", "bot", "chats", "chatId"].forEach((k) => store.set(k, null));
-      Object.assign(state, { token: null, glossary: null, draft: "", bot: null, chats: [], chatId: null });
+      ["token", "draft", "bot", "chats", "chatId", "autoChannels"].forEach((k) => store.set(k, null));
+      Object.assign(state, { token: null, glossary: null, draft: "", bot: null, chats: [], chatId: null, autoChannels: [] });
       d.close(); renderWelcome();
     } }, t("signOut")))]);
   d.addEventListener("close", () => { if (state.view === "write") render(); });
@@ -463,5 +527,7 @@ function downloadKey() {
   a.click();
   setTimeout(() => URL.revokeObjectURL(a.href), 1000);
 }
+
+document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible") refreshAuto(); });
 
 boot();

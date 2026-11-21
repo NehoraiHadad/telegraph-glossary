@@ -13,7 +13,7 @@ jobs:
         with:
           node-version: 22
       - name: Web linker (shared spec)
-        run: node --test web/tests/*.mjs
+        run: node --test web/tests/*.mjs bot/tests/*.mjs
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"

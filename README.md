@@ -7,10 +7,11 @@ Telegram (Instant View). Free, no sign-up, no server.
 
 > כותבים פוסט, והמונחים מהמילון שלך הופכים לקישורים לדפי הסבר קצרים שנפתחים ישר בטלגרם.
 
-## Three ways to use it
+## Ways to use it
 
 | | For | How |
 |---|---|---|
+| **Channel auto-link** | everyone with a channel | connect once; links are added to every post automatically ([bot/](bot/)) |
 | **Web app** | everyone | open **https://nehoraihadad.github.io/telegraph-glossary/** |
 | **AI agents** | Claude Code, Codex, Antigravity, Cursor, Claude Desktop… | MCP server, see below |
 | **CLI / Python** | scripts, automation | `telegraph-glossary` command, or `import telegraph_glossary` |
@@ -32,6 +33,16 @@ All three work on **the same glossary**. Copy your key from the web app's settin
 Your **key** (the Telegraph access token) is kept in your browser only. Back it up from
 Settings: download it, or copy a link that opens the glossary on another device.
 Whoever has the key can edit the glossary.
+
+## Channel auto-link
+
+Settings → **Auto-link my channel** → press Start in the bot → add it to your channel as an admin.
+From then on you simply post in Telegram: within seconds the bot edits the post and links every
+glossary term, keeping your formatting. When you add or remove a term, earlier posts are updated
+too. To update posts from before the bot joined, forward them to the bot.
+
+The bot only knows which channel uses which glossary. It never gets your key.
+Deployment instructions are in [bot/README.md](bot/README.md).
 
 ## Use it from AI agents
 
@@ -97,7 +108,8 @@ Settings live in `~/.config/telegraph-glossary/config.json`. The environment var
 
 ```
 web/            static web app (no build step), deployed to GitHub Pages
-  core/         linker, Markdown <-> Telegraph nodes, storage. Plain ES modules.
+  core/         linker, entity linking, Markdown <-> Telegraph nodes, storage. Plain ES modules.
+bot/            channel auto-link bot (Cloudflare Worker), reuses web/core
 src/telegraph_glossary/
                 the same core in Python + CLI + MCP server
 spec/           shared test cases both linkers must pass
@@ -109,7 +121,7 @@ Both Telegraph and the Telegram Bot API allow browser (CORS) requests, so the we
 to them directly. Nothing goes through a backend.
 
 ```bash
-node --test web/tests/*.mjs     # web core
+node --test web/tests/*.mjs bot/tests/*.mjs   # web core + bot
 pip install -e . pytest && pytest
 python -m http.server -d web    # run the web app locally
 ```
