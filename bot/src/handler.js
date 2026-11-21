@@ -24,7 +24,8 @@ const CODE_TTL = 24 * 3600;
 
 const T = {
   he: {
-    hello: "היי! אני מוסיף קישורים למונחים מהמילון שלך בפוסטים בערוץ, אוטומטית.\n\nכדי להתחיל, פתח את אתר המילון ← לשונית „ערוץ” ← „חיבור ערוץ”.",
+    hello: "היי! אני מוסיף קישורים למונחים מהמילון שלך בפוסטים בערוץ, אוטומטית.\n\nפתח את המילון, הוסף מונח, וחבר את הערוץ.",
+    openApp: "📖 פתיחת המילון",
     langSet: "מעכשיו אדבר איתך בעברית.",
     linked: (title) => `✅ המילון „${title}” מחובר.\n\nעכשיו הוסף אותי כמנהל לערוץ (עם הרשאת עריכת הודעות):`,
     addBtn: "➕ הוספה לערוץ",
@@ -39,7 +40,8 @@ const T = {
     help: "/status: ערוצים מחוברים\n/language: שפה\nכדי לעדכן פוסט ישן, העבר אותו אליי.",
   },
   en: {
-    hello: "Hi! I add links to your glossary terms in your channel posts, automatically.\n\nTo start, open the glossary web app → Channel tab → “Connect a channel”.",
+    hello: "Hi! I add links to your glossary terms in your channel posts, automatically.\n\nOpen the glossary, add a term, and connect your channel.",
+    openApp: "📖 Open the glossary",
     langSet: "I'll talk to you in English from now on.",
     linked: (title) => `✅ Glossary “${title}” connected.\n\nNow add me to your channel as an admin (with “edit messages”):`,
     addBtn: "➕ Add to channel",
@@ -76,6 +78,7 @@ export function randomCode() {
  *   tg(method, params) -> result (throws Error with .description),
  *   getPage(path) -> {title, content},   // Telegraph page (public)
  *   username() -> bot @username (without @),
+ *   webAppUrl?,                           // the web app, opened as a Telegram Mini App
  * }
  */
 export function createBot(deps) {
@@ -273,8 +276,20 @@ export function createBot(deps) {
       const names = await Promise.all(ids.map(async (id) => (await kv.get(`chan:${id}`))?.title || id));
       return say(user.id, s.status(names.map((n) => `• ${n}`)));
     }
-    if (cmd === "/start") return say(user.id, `${s.hello}\n\n${CHOOSE_LANG}`, { reply_markup: LANG_BUTTONS });
+    if (cmd === "/start" || cmd === "/app") {
+      const rows = [...(deps.webAppUrl ? [[{ text: s.openApp, web_app: { url: deps.webAppUrl } }]] : []), ...(cmd === "/start" ? LANG_BUTTONS.inline_keyboard : [])];
+      return say(user.id, cmd === "/start" ? `${s.hello}\n\n${CHOOSE_LANG}` : s.openApp, { reply_markup: { inline_keyboard: rows } });
+    }
     return say(user.id, s.help);
+  }
+
+  /** Mini App path: the caller verified initData, so no /start code round trip is needed. */
+  async function linkUser(user, path) {
+    await glossary(path); // must exist
+    await kv.put(`user:${user.id}`, path);
+    for (const c of (await kv.get(`pending:${user.id}`)) || []) await bindChannel(c, user, path);
+    await kv.del(`pending:${user.id}`);
+    return { add_to_channel_url: await addToChannelUrl(), bot_username: await deps.username() };
   }
 
   async function status(path) {
@@ -290,5 +305,5 @@ export function createBot(deps) {
     }
   }
 
-  return { handleUpdate, connectCode, status, resync, cron, glossary, username: deps.username };
+  return { handleUpdate, connectCode, linkUser, status, resync, cron, glossary, username: deps.username };
 }

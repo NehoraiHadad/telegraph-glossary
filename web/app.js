@@ -3,6 +3,7 @@ import { Glossary, APP_URL } from "./core/glossary.js";
 import { findTerms, toTelegramHtml, toMarkdown, toPlain } from "./core/linker.js";
 import { markdownToNodes, nodesToHtml } from "./core/markdown.js";
 import * as tg from "./core/telegram.js";
+import * as mini from "./tg.js";
 
 const REPO = "git+https://github.com/NehoraiHadad/telegraph-glossary";
 
@@ -13,7 +14,7 @@ const store = {
 };
 
 const state = {
-  lang: store.get("lang") || ((navigator.language || "").startsWith("he") ? "he" : "en"),
+  lang: store.get("lang") || ((mini.tgUser?.language_code || navigator.language || "").startsWith("he") ? "he" : "en"),
   token: store.get("token"),
   glossary: null,
   tab: store.get("tab", "terms"),
@@ -68,12 +69,27 @@ async function busy(btn, fn) {
 }
 
 async function copyText(s, msg = t("copied")) {
-  try { await navigator.clipboard.writeText(s); toast(msg); return true; } catch (e) { fail(e); return false; }
+  try { await navigator.clipboard.writeText(s); toast(msg); return true; } catch { /* some webviews block it */ }
+  const ta = h("textarea", { value: s, readOnly: true, style: "position:fixed;opacity:0" });
+  document.body.append(ta); ta.select();
+  const ok = document.execCommand("copy");
+  ta.remove();
+  ok ? toast(msg) : fail(new Error("clipboard"));
+  return ok;
 }
 
 function applyLang() {
   document.documentElement.lang = state.lang;
   document.documentElement.dir = state.lang === "he" ? "rtl" : "ltr";
+}
+
+// ---------------------------------------------------------------- the key
+// In the browser the key is the user's responsibility (download / Saved Messages).
+// Inside Telegram it is also kept in Telegram's CloudStorage: per user, synced, never on our servers.
+async function rememberKey(token) {
+  state.token = token;
+  store.set("token", token);
+  if (await mini.cloudSet("tgg_key", token)) keySaved();
 }
 
 // ---------------------------------------------------------------- auto-link bot
@@ -112,7 +128,14 @@ function notifyChanged() {
 
 // ---------------------------------------------------------------- boot
 async function boot() {
+  mini.start();
+  mini.routeLinks(document.body);
   applyLang();
+  if (mini.inTelegram) {
+    const cloudKey = await mini.cloudGet("tgg_key");
+    if (cloudKey) { state.token = cloudKey; store.set("token", cloudKey); keySaved(); }
+    else if (state.token) await rememberKey(state.token); // first open of the Mini App on a device that already had it
+  }
   const m = location.hash.match(/key=([^&]+)/);
   if (m) {
     state.token = decodeURIComponent(m[1]);
@@ -147,7 +170,7 @@ function renderWelcome() {
     e.preventDefault();
     busy(create, async () => {
       const g = await Glossary.create({ title: name.value.trim() || (state.lang === "he" ? "המילון שלי" : "My glossary") });
-      state.token = g.token; store.set("token", g.token); go("terms", false); ready(g);
+      await rememberKey(g.token); go("terms", false); ready(g);
     });
   } }, h("label", { class: "lbl", for: "gname" }, t("nameLabel")), h("div", { class: "row" }, name, create));
 
@@ -157,7 +180,7 @@ function renderWelcome() {
     e.preventDefault();
     busy(openBtn, async () => {
       const g = await new Glossary(keyIn.value.trim()).load();
-      state.token = g.token; store.set("token", g.token); keySaved(); ready(g);
+      await rememberKey(g.token); keySaved(); ready(g);
     });
   } }, keyIn, openBtn);
 
@@ -344,6 +367,13 @@ function viewChannel() {
 
   if (state.autoBot) {
     const connect = h("button", { class: state.channels.length ? "btn" : "btn primary lg", onclick: (e) => {
+      if (mini.inTelegram) {
+        return busy(e.currentTarget, async () => {
+          const { add_to_channel_url } = await botApi("/api/link-user", { init_data: mini.initData, index_path: g.indexPath });
+          state.waiting = true; render();
+          mini.openTelegram(add_to_channel_url);
+        });
+      }
       const win = window.open("about:blank", "_blank"); // open synchronously so popup blockers allow it
       busy(e.currentTarget, async () => {
         try {
@@ -356,7 +386,7 @@ function viewChannel() {
     parts.push(
       state.channels.length ? h("ul", { class: "chans" }, state.channels.map((c) => h("li", {}, c.title, h("span", { class: "ok" }, "✓ ", t("chConnected"))))) : null,
       h("div", { class: "row" }, connect,
-        state.waiting ? h("span", { class: "muted small" }, h("span", { class: "spin" }), " ", t("chWaiting")) : h("span", { class: "muted small" }, t("chHow")),
+        state.waiting ? h("span", { class: "muted small" }, h("span", { class: "spin" }), " ", t("chWaiting")) : h("span", { class: "muted small" }, mini.inTelegram ? t("chHowMini") : t("chHow")),
         state.waiting || state.channels.length ? h("button", { class: "btn quiet sm", onclick: (e) => busy(e.currentTarget, refreshChannels) }, t("chCheck")) : null),
       state.channels.length ? h("p", { class: "muted small", style: "margin-top:14px" }, t("chOld", state.autoBot.username)) : null,
     );
@@ -467,9 +497,10 @@ async function openTerm(entry, prefill = "") {
     await g.saveTerm({ term: term.value, aliases: aliases.value.split(","), definition: def.value }, entry ? entry.term : null);
     notifyChanged(); toast(t("saved")); state.selection = ""; d.close();
   }) }, t("save"));
-  const del = entry ? h("button", { class: "btn danger end", onclick: (e) => {
-    if (!confirm(t("confirmDelete", entry.term))) return;
-    busy(e.currentTarget, async () => { await g.removeTerm(entry.term); notifyChanged(); toast(t("deleted")); d.close(); });
+  const del = entry ? h("button", { class: "btn danger end", onclick: async (e) => {
+    const btn = e.currentTarget;
+    if (!(await mini.confirmDialog(t("confirmDelete", entry.term)))) return;
+    busy(btn, async () => { await g.removeTerm(entry.term); notifyChanged(); toast(t("deleted")); d.close(); });
   } }, t("delete")) : null;
 
   const d = dialog(entry ? entry.term : t("newTerm"), [
@@ -503,8 +534,12 @@ function openSettings(focus) {
       h("p", { class: "muted small" }, t("keyWhy")),
       h("div", { class: "row" }, keyOut,
         h("button", { class: "btn sm", onclick: (e) => { const show = keyOut.type === "password"; keyOut.type = show ? "text" : "password"; e.currentTarget.textContent = show ? t("hide") : t("show"); } }, t("show"))),
+      mini.hasCloud() ? h("p", { class: "ok small" }, "✓ ", t("keyInCloud")) : null,
       h("div", { class: "row" },
-        h("button", { class: "btn sm primary", onclick: () => { downloadKey(); keySaved(); } }, t("download")),
+        h("button", { class: mini.inTelegram ? "btn sm" : "btn sm primary", onclick: () => {
+          mini.shareToTelegram(`${APP_URL}#key=${encodeURIComponent(state.token)}`, t("shareText", g.title)); keySaved();
+        } }, t("saveToTelegram")),
+        mini.inTelegram ? null : h("button", { class: "btn sm", onclick: () => { downloadKey(); keySaved(); } }, t("download")),
         h("button", { class: "btn sm", onclick: async () => { if (await copyText(state.token)) keySaved(); } }, t("copy")),
         h("button", { class: "btn sm", onclick: async () => { if (await copyText(`${APP_URL}#key=${encodeURIComponent(state.token)}`, t("linkCopied"))) keySaved(); } }, t("deviceLink")))),
     sec("name", t("sName"),
@@ -513,8 +548,9 @@ function openSettings(focus) {
         h("a", { class: "small", href: g.indexUrl, target: "_blank", rel: "noopener" }, t("publicPage")),
         h("button", { class: "textlink small", onclick: (e) => busy(e.currentTarget, async () => window.open(await g.authUrl(), "_blank", "noopener")) }, t("editOnTelegraph")))),
     sec("links", t("sLinks"), radio("first", t("linkFirst")), radio("all", t("linkAll"))),
-    h("section", { class: "set" }, h("div", {}, h("button", { class: "btn danger sm", onclick: () => {
-      if (!confirm(t("confirmSignOut"))) return;
+    h("section", { class: "set" }, h("div", {}, h("button", { class: "btn danger sm", onclick: async () => {
+      if (!(await mini.confirmDialog(t("confirmSignOut")))) return;
+      await mini.cloudRemove("tgg_key");
       for (const k of ["token", "draft", "bot", "chats", "chatId", "channels", "keySaved", "tried", "setupHidden", "tab"]) store.set(k, null);
       location.reload();
     } }, t("signOut")))),
@@ -539,6 +575,6 @@ function downloadKey() {
 }
 
 // coming back from Telegram after "Connect a channel"
-document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible") refreshChannels(); });
+mini.onReturn(refreshChannels);
 
 boot();

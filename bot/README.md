@@ -33,8 +33,9 @@ Manual deploy: `cd bot && npm ci && npx wrangler deploy` (KV is provisioned auto
 | | |
 |---|---|
 | `POST /telegram` | webhook (checks `X-Telegram-Bot-Api-Secret-Token`) |
-| `GET /setup` | registers the webhook and commands (`/status`, `/language`) |
+| `GET /setup` | registers the webhook, the menu button that opens the Mini App (`WEB_APP_URL`) and commands (`/app`, `/status`, `/language`) |
 | `GET /api/info` | `{bot_username}` |
+| `POST /api/link-user` | `{init_data, index_path}` from the Mini App; verifies Telegram's signature, links the user, returns the add-to-channel link |
 | `POST /api/connect` | `{index_path}` → one-time `start_url` for the user |
 | `GET /api/status?index=` | connected channels |
 | `POST /api/changed` | `{index_path}`: re-apply the glossary to remembered posts now |

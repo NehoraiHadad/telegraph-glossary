@@ -8,6 +8,7 @@
 //   GET  /setup                (re)registers the webhook to this Worker. Idempotent and safe
 //                              to call by anyone: it can only point the bot at itself.
 //   GET  /api/info             {bot_username}
+//   POST /api/link-user        {init_data, index_path} from the Mini App -> {add_to_channel_url}
 //   POST /api/connect          {index_path} -> {start_url}   (used by the web app)
 //   GET  /api/status?index=... -> {channels}
 //   POST /api/changed          {index_path}  glossary was edited: update old posts now
@@ -57,11 +58,29 @@ function telegram(env) {
 
 let usernameCache = null;
 
+// Verify Telegram Mini App initData (core.telegram.org/bots/webapps#validating-data-received-via-the-mini-app)
+export async function verifyInitData(initData, botToken, maxAgeSec = 24 * 3600) {
+  const params = new URLSearchParams(initData || "");
+  const hash = params.get("hash");
+  if (!hash) return null;
+  params.delete("hash");
+  const check = [...params.entries()].map(([k, v]) => `${k}=${v}`).sort().join("\n");
+  const enc = new TextEncoder();
+  const hmac = async (key, data) => new Uint8Array(await crypto.subtle.sign("HMAC",
+    await crypto.subtle.importKey("raw", key, { name: "HMAC", hash: "SHA-256" }, false, ["sign"]), enc.encode(data)));
+  const secret = await hmac(enc.encode("WebAppData"), botToken);
+  const sig = [...(await hmac(secret, check))].map((b) => b.toString(16).padStart(2, "0")).join("");
+  if (sig !== hash) return null;
+  if (Date.now() / 1000 - Number(params.get("auth_date") || 0) > maxAgeSec) return null;
+  try { return JSON.parse(params.get("user")); } catch { return null; }
+}
+
 function bot(env) {
   const tg = telegram(env);
   return createBot({
     kv: kvAdapter(env.KV),
     tg,
+    webAppUrl: env.WEB_APP_URL || "",
     async username() {
       if (!usernameCache) usernameCache = (await tg("getMe")).username;
       return usernameCache;
@@ -103,11 +122,14 @@ export default {
       const tg = telegram(env);
       const me = await tg("getMe");
       await tg("setWebhook", { url: `${url.origin}/telegram`, secret_token: await webhookSecret(env), allowed_updates: ALLOWED_UPDATES });
+      if (env.WEB_APP_URL) await tg("setChatMenuButton", { menu_button: { type: "web_app", text: "📖 Glossary", web_app: { url: env.WEB_APP_URL } } });
       await tg("setMyCommands", { commands: [
+        { command: "app", description: "Open the glossary" },
         { command: "status", description: "Connected channels" },
         { command: "language", description: "Language: English / עברית" },
       ] });
       await tg("setMyCommands", { language_code: "he", commands: [
+        { command: "app", description: "פתיחת המילון" },
         { command: "status", description: "ערוצים מחוברים" },
         { command: "language", description: "שפה: עברית / English" },
       ] });
@@ -121,6 +143,14 @@ export default {
       if (!validPath(index_path)) return json({ error: "index_path required" }, 400);
       try { await b.glossary(index_path, true); } catch { return json({ error: "glossary not found" }, 404); }
       return json(await b.connectCode(index_path));
+    }
+
+    if (url.pathname === "/api/link-user" && request.method === "POST") {
+      const { init_data, index_path } = await request.json().catch(() => ({}));
+      if (!validPath(index_path)) return json({ error: "index_path required" }, 400);
+      const user = await verifyInitData(init_data, env.BOT_TOKEN);
+      if (!user) return json({ error: "Telegram sign-in could not be verified. Reopen the app from the bot." }, 401);
+      try { return json(await b.linkUser(user, index_path)); } catch { return json({ error: "glossary not found" }, 404); }
     }
 
     if (url.pathname === "/api/status") {

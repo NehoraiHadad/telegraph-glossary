@@ -57,7 +57,9 @@ jobs:
         if: steps.check.outputs.on == 'true'
         run: |
           jq -n --arg t "$BOT_TOKEN" '{BOT_TOKEN: $t}' > "$RUNNER_TEMP/secrets.json"
-          WRANGLER_OUTPUT_FILE_PATH="$RUNNER_TEMP/out.ndjson" npx wrangler deploy --secrets-file "$RUNNER_TEMP/secrets.json"
+          OWNER="${GITHUB_REPOSITORY_OWNER,,}"; REPO="${GITHUB_REPOSITORY#*/}"
+          WEB_APP_URL="https://$OWNER.github.io/$REPO/"   # the site, opened as a Telegram Mini App
+          WRANGLER_OUTPUT_FILE_PATH="$RUNNER_TEMP/out.ndjson" npx wrangler deploy --secrets-file "$RUNNER_TEMP/secrets.json" --var "WEB_APP_URL:$WEB_APP_URL"
           rm "$RUNNER_TEMP/secrets.json"
           URL=$(jq -r 'select(.type=="deploy") | .targets[]? ' "$RUNNER_TEMP/out.ndjson" | grep workers.dev | head -1)
           test -n "$URL"

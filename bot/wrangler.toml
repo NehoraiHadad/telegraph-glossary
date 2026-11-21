@@ -2,6 +2,10 @@ name = "telegraph-glossary-bot"
 main = "src/index.js"
 compatibility_date = "2025-09-01"
 
+# The web app, opened as a Telegram Mini App (menu button, /app). The deploy workflow sets it.
+[vars]
+WEB_APP_URL = "https://nehoraihadad.github.io/telegraph-glossary/"
+
 # KV is created automatically on deploy (CI fills in the id; see .github/workflows/deploy.yml).
 [[kv_namespaces]]
 binding = "KV"

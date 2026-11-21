@@ -142,14 +142,30 @@ export class Glossary {
     if (existing) {
       path = existing.path;
       await this.api("editPage", { path, title: term, ...this.pageMeta(), content });
-      Object.assign(existing, { term, aliases });
     } else {
-      const page = await this.api("createPage", { title: term, ...this.pageMeta(), content });
-      path = page.path;
-      this.terms.push({ term, aliases, path, url: pageUrl(path) });
+      path = (await this.api("createPage", { title: term, ...this.pageMeta(), content })).path;
     }
-    await this.saveIndex();
+    await this.updateIndex((terms) => [...terms.filter((t) => t.path !== path), { term, aliases, path, url: pageUrl(path) }]);
     return this.terms.find((t) => t.path === path);
+  }
+
+  /**
+   * Change the index without losing someone else's concurrent edit (another tab, an AI agent):
+   * re-read, apply, and only write if nobody changed the index in between; otherwise retry.
+   */
+  async updateIndex(apply, attempts = 4) {
+    const sig = (terms) => JSON.stringify(terms.map((t) => [t.path, t.term, t.aliases]).sort());
+    for (let i = 0; i < attempts; i++) {
+      await this.refresh();
+      const before = sig(this.terms);
+      const next = apply(this.terms);
+      const latest = parseIndex((await call("getPage", { path: this.indexPath, return_content: true }, this.fetch)).content);
+      if (sig(latest) !== before) continue; // changed meanwhile: start over from the fresh copy
+      this.terms = next;
+      await this.saveIndex();
+      return;
+    }
+    throw new Error("The glossary is being edited somewhere else right now. Try again.");
   }
 
   async removeTerm(term) {
@@ -158,8 +174,7 @@ export class Glossary {
     if (!t) return false;
     // Telegraph pages cannot be deleted; blank it and drop it from the index.
     await this.api("editPage", { path: t.path, title: t.term, ...this.pageMeta(), content: [{ tag: "p", children: ["—"] }] });
-    this.terms = this.terms.filter((x) => x !== t);
-    await this.saveIndex();
+    await this.updateIndex((terms) => terms.filter((x) => x.path !== t.path));
     return true;
   }
 

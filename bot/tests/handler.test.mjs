@@ -159,3 +159,41 @@ test("language buttons: /start offers them, a choice overrides the Telegram app 
   await t.bot.handleUpdate({ message: { chat: { id: 7, type: "private" }, from: user, text: "/language" } });
   assert.ok(t.calls.at(-1).params.reply_markup.inline_keyboard);
 });
+
+test("Mini App: initData signature is verified; linkUser binds without /start", async () => {
+  const { verifyInitData } = await import("../src/index.js");
+  const token = "123:secret";
+  const enc = new TextEncoder();
+  const hmac = async (key, data) => new Uint8Array(await crypto.subtle.sign("HMAC",
+    await crypto.subtle.importKey("raw", key, { name: "HMAC", hash: "SHA-256" }, false, ["sign"]), enc.encode(data)));
+  const make = async (fields) => {
+    const p = new URLSearchParams(fields);
+    const check = [...p.entries()].map(([k, v]) => `${k}=${v}`).sort().join("\n");
+    const sig = [...(await hmac(await hmac(enc.encode("WebAppData"), token), check))].map((b) => b.toString(16).padStart(2, "0")).join("");
+    p.set("hash", sig);
+    return p.toString();
+  };
+  const now = String(Math.floor(Date.now() / 1000));
+  const good = await make({ auth_date: now, user: JSON.stringify({ id: 7, language_code: "he" }), query_id: "x" });
+  assert.equal((await verifyInitData(good, token)).id, 7);
+  assert.equal(await verifyInitData(good.replace("id%22%3A7", "id%22%3A8"), token), null); // tampered
+  assert.equal(await verifyInitData(good, "999:other"), null); // other bot
+  const old = await make({ auth_date: "1000", user: JSON.stringify({ id: 7 }) });
+  assert.equal(await verifyInitData(old, token), null); // expired
+
+  const t = setup();
+  await t.bot.handleUpdate({ my_chat_member: { chat: channel, from: user, new_chat_member: { status: "administrator" } } });
+  const r = await t.bot.linkUser(user, "My-glossary-11-21");
+  assert.equal(r.add_to_channel_url, "https://t.me/GlossBot?startchannel&admin=edit_messages");
+  assert.equal((await t.kv.get("chan:-1001")).path, "My-glossary-11-21"); // pending channel bound
+});
+
+test("/app and /start offer the Mini App button when configured", async () => {
+  const store = new Map();
+  const kv = { get: async (k) => store.get(k) ?? null, put: async (k, v) => store.set(k, v), del: async (k) => store.delete(k), list: async () => [] };
+  const calls = [];
+  const bot = createBot({ kv, username: async () => "GlossBot", webAppUrl: "https://example.org/app/",
+    tg: async (method, params) => { calls.push({ method, params }); return {}; }, getPage: async () => ({ title: "G", content: [] }) });
+  await bot.handleUpdate({ message: { chat: { id: 7, type: "private" }, from: user, text: "/app" } });
+  assert.deepEqual(calls.at(-1).params.reply_markup.inline_keyboard[0][0].web_app, { url: "https://example.org/app/" });
+});

@@ -27,6 +27,13 @@
   }
 }
 
+/* Telegram (Mini App) can be dark while the device is light: follow Telegram. */
+:root[data-theme="dark"] {
+  --paper: #111318; --surface: #1a1d24; --sunken: #22262f; --ink: #eceef2; --muted: #9aa1ae;
+  --line: #2b2f39; --action: #a9b5ff; --action-ink: #111318; --marker: rgba(255, 214, 10, .38);
+  --link: #8fb4ff; --ok: #5bc48e; --danger: #ff8a7a; color-scheme: dark;
+}
+
 * { box-sizing: border-box; }
 [hidden] { display: none !important; }
 html, body { margin: 0; }

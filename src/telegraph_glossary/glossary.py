@@ -198,16 +198,33 @@ class Glossary:
         if not content:
             raise ValueError("empty definition")
         if existing:
-            self._call("editPage", {"path": existing.path, "title": term, **self._meta(), "content": content})
-            existing.term, existing.aliases = term, aliases
-            entry = existing
+            path = existing.path
+            self._call("editPage", {"path": path, "title": term, **self._meta(), "content": content})
         else:
-            page = self._call("createPage", {"title": term, **self._meta(), "content": content})
-            entry = Entry(term, page["path"], aliases)
-            self.terms.append(entry)
-        self.save_index()
+            path = self._call("createPage", {"title": term, **self._meta(), "content": content})["path"]
+        entry = Entry(term, path, aliases)
+        self.update_index(lambda terms: [t for t in terms if t.path != path] + [entry])
         self._changed()
         return entry
+
+    def update_index(self, apply, attempts: int = 4) -> None:
+        """Change the index without losing a concurrent edit (web app, another agent):
+        re-read, apply, and only write if nobody changed it in between; otherwise retry."""
+
+        def sig(terms: list[Entry]) -> list:
+            return sorted([t.path, t.term, t.aliases] for t in terms)
+
+        for _ in range(attempts):
+            self.refresh()
+            before = sig(self.terms)
+            new_terms = apply(list(self.terms))
+            latest = parse_index(self._call("getPage", {"path": self.index_path, "return_content": True}, auth=False).get("content", []))
+            if sig(latest) != before:
+                continue
+            self.terms = new_terms
+            self.save_index()
+            return
+        raise RuntimeError("The glossary is being edited somewhere else right now. Try again.")
 
     def remove_term(self, term: str) -> bool:
         self.refresh()
@@ -216,7 +233,6 @@ class Glossary:
             return False
         # Telegraph pages cannot be deleted: blank the page and drop it from the index.
         self._call("editPage", {"path": entry.path, "title": entry.term, **self._meta(), "content": [{"tag": "p", "children": ["—"]}]})
-        self.terms = [t for t in self.terms if t is not entry]
-        self.save_index()
+        self.update_index(lambda terms: [t for t in terms if t.path != entry.path])
         self._changed()
         return True
