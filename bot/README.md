@@ -1,16 +1,17 @@
 # Channel auto-link bot
 
 Users post in their channel as usual. The bot, a channel admin with the "edit messages" right,
-edits each post and adds glossary links as message entities. The author's formatting, buttons
-and link-preview setting stay as they were. When the glossary changes, the bot re-applies it to
+edits each post and adds glossary links as message entities. The author's formatting and
+link-preview setting stay as they were. When the glossary changes, the bot re-applies it to
 the posts it remembers (the last 300 per channel). Older posts can be forwarded to the bot, and it
 updates the originals.
 
 The bot never sees anyone's Telegraph key. Glossaries are public pages, so all it stores is
 *which channel uses which glossary*.
 
-The bot speaks Hebrew or English. It follows the Telegram app language until the user picks
-one (buttons on Start, or `/language`).
+The bot speaks Hebrew or English. Connecting from the web app sets the web app's language;
+otherwise it follows the Telegram app language. The user can change it any time (buttons on
+Start, or `/language`).
 
 ## Deploy
 
@@ -50,7 +51,7 @@ Only `BOT_TOKEN` is needed: the webhook secret is derived from it.
 | `GET /setup` | registers the webhook, the menu button that opens the Mini App (`WEB_APP_URL`) and commands (`/app`, `/status`, `/language`) |
 | `GET /api/info` | `{bot_username}` |
 | `POST /api/link-user` | `{init_data, index_path}` from the Mini App; verifies Telegram's signature, links the user, returns the add-to-channel link |
-| `POST /api/connect` | `{index_path}` → one-time `start_url` for the user |
+| `POST /api/connect` | `{index_path, lang?}` → one-time `start_url` for the user |
 | `GET /api/status?index=` | connected channels |
 | `POST /api/changed` | `{index_path}`: re-apply the glossary to remembered posts now |
 | cron `*/15` | catches glossary edits made elsewhere |
@@ -58,6 +59,8 @@ Only `BOT_TOKEN` is needed: the webhook secret is derived from it.
 ## Limits
 
 * Channels only. In groups, bots cannot edit other people's messages.
+* Posts with inline buttons are left as they are. The buttons come from another bot (a post
+  scheduler, for example), and Telegram lets only that bot edit the post.
 * Bots can't read channel history, so posts from before the bot joined are updated only when forwarded.
 * Free plan: about 1,000 KV writes a day (about 2 per new post) and 50 outgoing requests per
   invocation, so a glossary change updates up to 30 posts per run and the rest on the next run.
@@ -65,6 +68,6 @@ Only `BOT_TOKEN` is needed: the webhook secret is derived from it.
 
 ## Tests
 
-`npm test` runs the flow tests (connect, post, caption and buttons, no loops, glossary changes,
+`npm test` runs the flow tests (connect, post, caption, posts with buttons, no loops, glossary changes,
 forwarding, removal) with mocked Telegram and KV. `../e2e/run.sh` runs the real Worker locally
 against a fake Telegram API, with the web app in a browser.

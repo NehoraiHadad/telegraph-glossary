@@ -12,7 +12,7 @@
 //   gchans:<path>      -> [chatId]            (channels using a glossary)
 //   gver:<path>        -> version hash of the glossary last applied
 //   posts:<chatId>     -> [{id, v}]           (recent posts + glossary version applied)
-//   post:<chatId>:<id> -> {text, entities, caption, preview, markup, paths}
+//   post:<chatId>:<id> -> {text, entities, caption, preview, paths}
 
 import { addLinkEntities, stripGlossaryLinks, sameEntities } from "../../web/core/entities.js";
 import { parseIndex } from "../../web/core/glossary.js";
@@ -35,6 +35,7 @@ const T = {
     removed: (c) => `הוסרתי מהערוץ „${c}”, הוא כבר לא מחובר.`,
     status: (list) => (list.length ? `ערוצים מחוברים:\n${list.join("\n")}` : "אין ערוצים מחוברים."),
     fwdDone: (n) => (n ? `✅ עודכן (${n} מונחים).` : "אין בפוסט הזה מונחים מהמילון."),
+    fwdButtons: "לפוסט הזה יש כפתורים, ואת הפוסט יכול לערוך רק הבוט שהוסיף אותם. לכן אני לא יכול להוסיף לו קישורים.",
     fwdUnknown: "את הפוסט הזה אני לא יכול לעדכן: הערוץ שלו לא מחובר אליי, או שהפוסט לא הועבר ישירות מהערוץ.",
     badCode: "הקישור פג תוקף. פתח שוב את ההגדרות באתר ולחץ על החיבור מחדש.",
     help: "/status: ערוצים מחוברים\n/language: שפה\nכדי לעדכן פוסט ישן, העבר אותו אליי.",
@@ -51,11 +52,19 @@ const T = {
     removed: (c) => `I was removed from “${c}”, so it's no longer connected.`,
     status: (list) => (list.length ? `Connected channels:\n${list.join("\n")}` : "No connected channels."),
     fwdDone: (n) => (n ? `✅ Updated (${n} terms).` : "No glossary terms in this post."),
+    fwdButtons: "This post has buttons, and only the bot that added them can edit it, so I can't add links to it.",
     fwdUnknown: "I can't update that post: its channel isn't connected to me, or it wasn't forwarded straight from the channel.",
     badCode: "That link expired. Open the settings in the web app and connect again.",
     help: "/status: connected channels\n/language: language\nTo update an old post, forward it to me.",
   },
 };
+/**
+ * Inline keyboards on channel posts always belong to some other bot (users can't add them, and
+ * this bot never does). Telegram rejects every edit of such a post by any other bot with
+ * MESSAGE_ID_INVALID, with or without reply_markup, so these posts are left alone.
+ */
+const hasButtons = (msg) => !!msg.reply_markup?.inline_keyboard?.length;
+
 const tr = (user) => T[(user?.language_code || "").startsWith("he") ? "he" : "en"];
 const CHOOSE_LANG = "בחר שפה · Choose a language";
 const LANG_BUTTONS = { inline_keyboard: [[{ text: "עברית", callback_data: "lang:he" }, { text: "English", callback_data: "lang:en" }]] };
@@ -107,9 +116,10 @@ export function createBot(deps) {
   const addToChannelUrl = async () => `https://t.me/${await deps.username()}?startchannel&admin=edit_messages`;
 
   // ------------------------------------------------------------ binding
-  async function connectCode(path) {
+  /** `lang` is the web app's language: the bot then talks in it, unless the user picked another one. */
+  async function connectCode(path, lang) {
     const code = randomCode();
-    await kv.put(`code:${code}`, path, { ttl: CODE_TTL });
+    await kv.put(`code:${code}`, { path, lang: T[lang] ? lang : null }, { ttl: CODE_TTL });
     const bot = await deps.username();
     return { code, start_url: `https://t.me/${bot}?start=${code}`, bot_username: bot };
   }
@@ -143,7 +153,7 @@ export function createBot(deps) {
     const { entities, found } = addLinkEntities(rec.text, rec.entities, g.terms, { mode });
     rec.paths = [...new Set(entities.filter((e) => e.type === "text_link").map((e) => pathFromUrl(e.url)).filter((p) => p && (g.paths.has(p) || rec.paths?.includes(p))))];
     if (!sameEntities(entities, current)) {
-      const common = { chat_id: chatId, message_id: id, ...(rec.markup ? { reply_markup: rec.markup } : {}) };
+      const common = { chat_id: chatId, message_id: id };
       try {
         if (rec.caption) await tg("editMessageCaption", { ...common, caption: rec.text, caption_entities: entities });
         else await tg("editMessageText", { ...common, text: rec.text, entities, link_preview_options: rec.preview || { is_disabled: true } });
@@ -168,7 +178,7 @@ export function createBot(deps) {
     const binding = await kv.get(`chan:${chatId}`);
     if (!binding) return null;
     const text = msg.text ?? msg.caption;
-    if (!text) return 0;
+    if (!text || hasButtons(msg)) return 0;
     const id = forwarded ? msg.forward_origin.message_id : msg.message_id;
     const g = await glossary(binding.path);
     const prev = await kv.get(`post:${chatId}:${id}`);
@@ -180,7 +190,6 @@ export function createBot(deps) {
       entities: stripGlossaryLinks(current, isOurs),
       caption: msg.text === undefined,
       preview: msg.link_preview_options || prev?.preview || null,
-      markup: msg.reply_markup || prev?.markup || null,
       paths: prev?.paths || [],
     };
     try {
@@ -253,18 +262,22 @@ export function createBot(deps) {
       const chat = msg.forward_origin.chat;
       const binding = await kv.get(`chan:${chat.id}`);
       if (!binding || (binding.owner && binding.owner !== user.id)) return say(user.id, s.fwdUnknown);
+      if (hasButtons(msg)) return say(user.id, s.fwdButtons);
       try { return say(user.id, s.fwdDone(await handlePost(chat.id, msg, { forwarded: true }))); }
       catch (e) { return say(user.id, `⚠️ ${e.message}`); }
     }
 
     const [cmd, arg] = (msg.text || "").trim().split(/\s+/, 2);
     if (cmd === "/start" && arg) {
-      const path = await kv.get(`code:${arg}`);
-      if (!path) return say(user.id, s.badCode);
+      const entry = await kv.get(`code:${arg}`);
+      if (!entry) return say(user.id, s.badCode);
+      const { path, lang } = typeof entry === "string" ? { path: entry } : entry; // codes made before lang was stored
       await kv.del(`code:${arg}`);
       await kv.put(`user:${user.id}`, path);
+      if (lang && !(await kv.get(`lang:${user.id}`))) await kv.put(`lang:${user.id}`, lang);
       const g = await glossary(path);
-      await say(user.id, s.linked(g.title), { reply_markup: { inline_keyboard: [[{ text: s.addBtn, url: await addToChannelUrl() }]] } });
+      const sl = await trU(user);
+      await say(user.id, sl.linked(g.title), { reply_markup: { inline_keyboard: [[{ text: sl.addBtn, url: await addToChannelUrl() }]] } });
       for (const c of (await kv.get(`pending:${user.id}`)) || []) await bindChannel(c, user, path);
       await kv.del(`pending:${user.id}`);
       return;

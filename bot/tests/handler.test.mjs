@@ -57,16 +57,32 @@ test("new channel post gets links, author formatting kept", async () => {
   assert.deepEqual(e.params.link_preview_options, { is_disabled: true });
 });
 
-test("captions are edited with caption entities; buttons are kept", async () => {
+test("captions are edited with caption entities", async () => {
   const t = setup();
   await connectAndAdd(t);
   t.calls.length = 0;
-  const markup = { inline_keyboard: [[{ text: "x", url: "https://x.y" }]] };
-  await t.bot.handleUpdate({ channel_post: { chat: channel, message_id: 51, caption: "photo of API", photo: [{}], reply_markup: markup } });
+  await t.bot.handleUpdate({ channel_post: { chat: channel, message_id: 51, caption: "photo of API", photo: [{}] } });
   const [e] = edits(t.calls);
   assert.equal(e.method, "editMessageCaption");
-  assert.deepEqual(e.params.reply_markup, markup);
+  assert.equal(e.params.reply_markup, undefined);
   assert.deepEqual(links(e.params.caption_entities), [[9, 3, "https://telegra.ph/API-1"]]);
+});
+
+// Real Telegram: a post carrying another bot's inline keyboard can't be edited by this bot
+// (MESSAGE_ID_INVALID, with or without reply_markup), so it must not be touched or remembered.
+test("posts with inline buttons are left alone; forwarding one explains why", async () => {
+  const t = setup();
+  await connectAndAdd(t);
+  t.calls.length = 0;
+  const reply_markup = { inline_keyboard: [[{ text: "x", url: "https://x.y" }]] };
+  await t.bot.handleUpdate({ channel_post: { chat: channel, message_id: 53, text: "API docs", reply_markup } });
+  await t.bot.handleUpdate({ channel_post: { chat: channel, message_id: 54, caption: "photo of API", photo: [{}], reply_markup } });
+  assert.equal(edits(t.calls).length, 0);
+  assert.equal(await t.kv.get("post:-1001:53"), null);
+  await t.bot.handleUpdate({ message: { chat: { id: 7, type: "private" }, from: user, text: "API docs", reply_markup,
+    forward_origin: { type: "channel", chat: channel, message_id: 53 } } });
+  assert.equal(edits(t.calls).length, 0);
+  assert.match(t.calls.at(-1).params.text, /buttons/);
 });
 
 test("our own edit echoing back does not loop", async () => {
@@ -113,6 +129,20 @@ test("strangers cannot edit someone else's channel by forwarding", async () => {
   await t.bot.handleUpdate({ message: { chat: { id: 8, type: "private" }, from: { id: 8 }, text: "API",
     forward_origin: { type: "channel", chat: channel, message_id: 9 } } });
   assert.equal(edits(t.calls).length, 0);
+});
+
+test("connecting from the web app uses its language, unless the user already picked one", async () => {
+  const t = setup();
+  const { code } = await t.bot.connectCode("My-glossary-11-21", "he");
+  await t.bot.handleUpdate({ message: { chat: { id: 7, type: "private" }, from: user, text: `/start ${code}` } });
+  assert.match(t.calls.at(-1).params.text, /מחובר/);
+  assert.equal(t.calls.at(-1).params.reply_markup.inline_keyboard[0][0].text, "➕ הוספה לערוץ");
+  assert.equal(await t.kv.get("lang:7"), "he");
+
+  await t.kv.put("lang:8", "en");
+  const again = await t.bot.connectCode("My-glossary-11-21", "he");
+  await t.bot.handleUpdate({ message: { chat: { id: 8, type: "private" }, from: { id: 8, language_code: "he" }, text: `/start ${again.code}` } });
+  assert.match(t.calls.at(-1).params.text, /connected/);
 });
 
 test("channel added before /start is bound once the user connects", async () => {
