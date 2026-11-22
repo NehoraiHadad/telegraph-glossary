@@ -67,6 +67,8 @@ Both deploy on every push to `main`, and no deploy secrets live in GitHub.
 
 ## Development
 
+Contributing (architecture, rules, secrets, tests): [AGENTS.md](AGENTS.md).
+
 ```
 web/       static web app (no build step)
   core/    linker, Telegram entities, Markdown <-> Telegraph, storage (shared with bot/)
