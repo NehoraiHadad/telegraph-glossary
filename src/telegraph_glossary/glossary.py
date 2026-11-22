@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+import time
 from dataclasses import asdict, dataclass, field
 from typing import Any, Optional
 from urllib.parse import quote, unquote
@@ -103,6 +104,7 @@ class Glossary:
         self.index_path: Optional[str] = None
         self.title = ""
         self.terms: list[Entry] = []
+        self.settle_s = 1.5  # see update_index
 
     # -- low level -----------------------------------------------------------
     def _call(self, method: str, params: Optional[dict] = None, auth: bool = True) -> Any:
@@ -198,16 +200,39 @@ class Glossary:
         if not content:
             raise ValueError("empty definition")
         if existing:
-            self._call("editPage", {"path": existing.path, "title": term, **self._meta(), "content": content})
-            existing.term, existing.aliases = term, aliases
-            entry = existing
+            path = existing.path
+            self._call("editPage", {"path": path, "title": term, **self._meta(), "content": content})
         else:
-            page = self._call("createPage", {"title": term, **self._meta(), "content": content})
-            entry = Entry(term, page["path"], aliases)
-            self.terms.append(entry)
-        self.save_index()
+            path = self._call("createPage", {"title": term, **self._meta(), "content": content})["path"]
+        entry = Entry(term, path, aliases)
+        self.update_index(lambda terms: [t for t in terms if t.path != path] + [entry])
         self._changed()
         return entry
+
+    def update_index(self, apply, attempts: int = 4) -> None:
+        """Change the index without losing a concurrent edit (web app, another agent).
+
+        Telegraph has no compare-and-swap: two writers that read the same index both write, and
+        the later write drops the earlier change. So write, wait for writes already in flight to
+        land, re-read, and re-apply the change on top if it was dropped. `apply` must be
+        idempotent (replace by path, filter by path), so re-applying never duplicates."""
+
+        def sig(terms: list[Entry]) -> list:
+            return sorted([t.path, t.term, t.aliases] for t in terms)
+
+        def missing() -> bool:
+            return sig(apply(list(self.terms))) != sig(self.terms)
+
+        self.refresh()
+        for _ in range(attempts):
+            if not missing():
+                return
+            self.terms = apply(list(self.terms))
+            self.save_index()
+            time.sleep(self.settle_s)
+            self.refresh()
+        if missing():
+            raise RuntimeError("The glossary is being edited somewhere else right now. Try again.")
 
     def remove_term(self, term: str) -> bool:
         self.refresh()
@@ -216,7 +241,6 @@ class Glossary:
             return False
         # Telegraph pages cannot be deleted: blank the page and drop it from the index.
         self._call("editPage", {"path": entry.path, "title": entry.term, **self._meta(), "content": [{"tag": "p", "children": ["—"]}]})
-        self.terms = [t for t in self.terms if t is not entry]
-        self.save_index()
+        self.update_index(lambda terms: [t for t in terms if t.path != entry.path])
         self._changed()
         return True

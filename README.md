@@ -21,6 +21,11 @@ You build a glossary once. Each term becomes a short [Telegraph](https://telegra
 
 No channel? The **Post** tab shows which terms will be linked and copies the post with its links.
 
+**Inside Telegram:** the bot's menu button (or `/app`) opens the same app as a Telegram Mini App.
+Telegram signs you in, and your key is kept in your own Telegram cloud storage, not on our servers,
+so it's there on every device. Outside Telegram, the key is your responsibility: download it, or
+save it to Saved Messages with one tap.
+
 ## For AI agents
 
 Any MCP-capable agent can manage the glossary: Claude Code, Codex, Gemini CLI, Antigravity,
