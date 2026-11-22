@@ -19,7 +19,10 @@ import { parseIndex } from "../../web/core/glossary.js";
 import { pathFromUrl } from "../../web/core/telegraph.js";
 
 const MAX_POSTS = 300; // remembered per channel
-const MAX_EDITS_PER_RUN = 30; // stay well under platform subrequest limits
+// External requests (Telegraph fetches, Telegram edits) per run. The Workers free plan allows 50
+// per invocation (developers.cloudflare.com/workers/platform/limits/#subrequests); leave headroom.
+const MAX_REQUESTS_PER_RUN = 45;
+const CRON_PERIOD_MS = 15 * 60_000; // matches the cron trigger in wrangler.toml
 const CODE_TTL = 24 * 3600;
 
 const T = {
@@ -240,14 +243,15 @@ export function createBot(deps) {
    * Anyone may trigger this (/api/changed carries no authority), so it only acts on public state
    * and writes to KV only what actually changed: an unchanged glossary or a glossary without
    * channels costs reads only.
+   * `budget.requests` counts external requests, failed ones included: the Telegraph fetch and
+   * every Telegram attempt. An unexpected (likely transient) error ends the run.
    */
-  async function resync(path, budget = { edits: MAX_EDITS_PER_RUN }) {
+  async function resync(path, budget = { requests: MAX_REQUESTS_PER_RUN }) {
     const chats = (await kv.get(`gchans:${path}`)) || [];
-    if (!chats.length) return 0;
+    if (!chats.length || budget.requests <= 0) return 0;
+    budget.requests--;
     const g = await glossary(path, true);
     if ((await kv.get(`gver:${path}`)) === g.version) return 0;
-    // The budget counts Telegram attempts, failed ones included: it bounds the run's subrequests.
-    // An unexpected (likely transient) error ends the run; the rest waits for the next one.
     let done = 0, complete = true, stop = false;
     for (const chatId of chats) {
       const binding = await kv.get(`chan:${chatId}`);
@@ -255,10 +259,10 @@ export function createBot(deps) {
       let dirty = false;
       for (const p of [...list].reverse()) {
         if (p.v === g.version) continue;
-        if (budget.edits <= 0) { complete = false; stop = true; break; }
+        if (budget.requests <= 0) { complete = false; stop = true; break; }
         const rec = await kv.get(`post:${chatId}:${p.id}`);
         if (rec) {
-          budget.edits--;
+          budget.requests--;
           try { await apply(chatId, p.id, rec, g, binding?.mode, rec.applied || rec.entities); done++; await kv.put(`post:${chatId}:${p.id}`, rec); }
           catch (e) { if (!/not found|can't be edited|MESSAGE_ID_INVALID/i.test(e.message)) { complete = false; stop = true; break; } }
         }
@@ -365,10 +369,18 @@ export function createBot(deps) {
     return Promise.all(ids.map(async (id) => ({ id, title: (await kv.get(`chan:${id}`))?.title || id })));
   }
 
+  /**
+   * Catches glossary edits made elsewhere. One run can't check every glossary (each check is a
+   * Telegraph fetch), so each run starts where the previous one's share ended: every glossary is
+   * checked at least once every ceil(n / MAX_REQUESTS_PER_RUN) runs, with no state to store.
+   */
   async function cron() {
-    let budget = { edits: MAX_EDITS_PER_RUN };
-    for (const key of await kv.list("gchans:")) {
-      if (budget.edits <= 0) break;
+    const budget = { requests: MAX_REQUESTS_PER_RUN };
+    const keys = await kv.list("gchans:");
+    const run = Math.floor((deps.now?.() ?? Date.now()) / CRON_PERIOD_MS);
+    const start = keys.length ? (run * MAX_REQUESTS_PER_RUN) % keys.length : 0;
+    for (let i = 0; i < keys.length && budget.requests > 0; i++) {
+      const key = keys[(start + i) % keys.length];
       try { await resync(key.slice("gchans:".length), budget); } catch (e) { console.error("resync", key, e); }
     }
   }

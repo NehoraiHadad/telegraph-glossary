@@ -67,7 +67,8 @@ Only `BOT_TOKEN` is needed: the webhook secret is derived from it.
   scheduler, for example), and Telegram lets only that bot edit the post.
 * Bots can't read channel history, so posts from before the bot joined are updated only when forwarded.
 * Free plan: about 1,000 KV writes a day (about 2 per new post) and 50 outgoing requests per
-  invocation, so a glossary change updates up to 30 posts per run and the rest on the next run.
+  invocation. So a glossary change updates about 40 posts per run and the rest on the next run,
+  and each 15-minute run checks up to 45 glossaries for edits made elsewhere, taking turns.
   The $5 Workers plan lifts both limits.
 
 ## Tests

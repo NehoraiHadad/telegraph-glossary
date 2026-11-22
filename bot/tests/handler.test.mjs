@@ -12,7 +12,8 @@ function setup() {
     list: async (p) => [...store.keys()].filter((k) => k.startsWith(p)),
   };
   const calls = [];
-  let fail = false;
+  let fail = false, now = 0;
+  const fetched = [];
   let terms = [{ term: "API", aliases: [], path: "API-1" }, { term: "פייתון", aliases: ["Python"], path: "Py-1" }];
   const bot = createBot({
     kv,
@@ -22,9 +23,10 @@ function setup() {
       if (fail && method.startsWith("edit")) throw new Error("Bad Gateway");
       return { message_id: 1 };
     },
-    getPage: async () => ({ title: "My glossary", content: buildIndex(terms, "My glossary") }),
+    getPage: async (path) => { fetched.push(path); return { title: "My glossary", content: buildIndex(terms, "My glossary") }; },
+    now: () => now,
   });
-  return { bot, calls, kv, store, setTerms: (t) => { terms = t; }, failEdits: (on) => { fail = on; } };
+  return { bot, calls, kv, store, fetched, setTerms: (t) => { terms = t; }, failEdits: (on) => { fail = on; }, setNow: (ms) => { now = ms; } };
 }
 
 const user = { id: 7, language_code: "en", first_name: "Dana" };
@@ -292,7 +294,7 @@ test("resync writes KV only on real change (anyone can trigger it through /api/c
   assert.deepEqual(writes.sort(), ["gver:My-glossary-11-21", "post:-1001:70", "posts:-1001"]);
 });
 
-test("resync budget bounds Telegram attempts, failed ones included", async () => {
+test("resync budget bounds external requests, failed ones included", async () => {
   const t = setup();
   await connectAndAdd(t);
   const other = { id: -1002, type: "channel", title: "Second" };
@@ -305,13 +307,30 @@ test("resync budget bounds Telegram attempts, failed ones included", async () =>
   t.setTerms([{ term: "API", aliases: [], path: "API-2" }]);
   t.calls.length = 0;
   t.failEdits(true); // transient failure: one attempt, then the run stops (other channel included)
-  await t.bot.resync("My-glossary-11-21", { edits: 3 });
+  await t.bot.resync("My-glossary-11-21", { requests: 4 }); // 1 Telegraph fetch + 3 Telegram attempts
   assert.equal(edits(t.calls).length, 1);
   t.failEdits(false);
   t.calls.length = 0;
-  await t.bot.resync("My-glossary-11-21", { edits: 3 });
+  await t.bot.resync("My-glossary-11-21", { requests: 4 });
   assert.equal(edits(t.calls).length, 3);
   t.calls.length = 0;
   assert.equal(await t.bot.resync("My-glossary-11-21"), 7); // the rest, then done
   assert.equal(await t.bot.resync("My-glossary-11-21"), 0);
+});
+
+test("cron stays within the request budget and reaches every glossary in turn", async () => {
+  const t = setup();
+  const paths = Array.from({ length: 100 }, (_, i) => `G-${String(i).padStart(3, "0")}`);
+  for (const [i, p] of paths.entries()) await t.kv.put(`gchans:${p}`, [String(-2000 - i)]);
+  const seen = new Set();
+  const runs = Math.ceil(paths.length / 45);
+  for (let run = 0; run < runs; run++) {
+    t.setNow(run * 15 * 60_000);
+    t.fetched.length = 0;
+    t.calls.length = 0;
+    await t.bot.cron();
+    assert.ok(t.fetched.length + t.calls.length <= 45, `run ${run}: ${t.fetched.length + t.calls.length} requests`);
+    t.fetched.forEach((p) => seen.add(p));
+  }
+  assert.equal(seen.size, paths.length);
 });
