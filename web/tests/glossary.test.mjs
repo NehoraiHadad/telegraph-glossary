@@ -9,7 +9,8 @@ const sentBytes = (nodes) => new TextEncoder().encode(JSON.stringify(nodes)).len
 function memTelegraph(terms) {
   const pages = { Idx: { title: "G", content: buildIndex(terms) } };
   for (const t of terms) pages[t.path] = { title: t.term, content: [{ tag: "p", children: [`about ${t.term}`] }] };
-  const state = { pages, failIndexWrite: false, failPage: null, indexWrites: 0 };
+  // failPage: editPage of this path fails (onFail runs then); lostPage: it is applied, but the answer is an error.
+  const state = { pages, failIndexWrite: false, failPage: null, onFail: null, lostPage: null, indexWrites: 0 };
   const ok = (result) => ({ json: async () => ({ ok: true, result }) });
   const fail = (error) => ({ json: async () => ({ ok: false, error }) });
   const fetchImpl = async (url, { body }) => {
@@ -24,13 +25,13 @@ function memTelegraph(terms) {
       return ok({ path });
     }
     if (method === "editPage") {
-      if (p.path === state.failPage) return fail("network down");
+      if (p.path === state.failPage) { state.onFail?.(); return fail("network down"); }
       if (p.path === "Idx") {
-        if (state.failIndexWrite) return fail("network down");
+        if (state.failIndexWrite) return fail("index write failed");
         state.indexWrites++;
       }
       pages[p.path] = { title: p.title, content };
-      return ok({});
+      return p.path === state.lostPage ? fail("network down") : ok({});
     }
     throw new Error(method);
   };
@@ -42,7 +43,7 @@ function memTelegraph(terms) {
 test("removing a term keeps its definition when the index write fails", async () => {
   const { g, state } = memTelegraph([{ term: "API", aliases: [], path: "API-1" }]);
   state.failIndexWrite = true;
-  await assert.rejects(g.removeTerm("API"), /network down/);
+  await assert.rejects(g.removeTerm("API"), /index write failed/);
   assert.deepEqual(state.pages["API-1"].content, [{ tag: "p", children: ["about API"] }]);
   state.failIndexWrite = false;
   assert.equal(await g.removeTerm("API"), true);
@@ -76,4 +77,27 @@ test("removing a term lists it again when blanking its page fails", async () => 
   state.failPage = null;
   assert.equal(await g.removeTerm("API"), true);
   assert.deepEqual(parseIndex(state.pages.Idx.content), []);
+});
+
+test("removing a term whose page was blanked although the answer was lost does not list it again", async () => {
+  const { g, state } = memTelegraph([{ term: "API", aliases: [], path: "API-1" }]);
+  state.lostPage = "API-1";
+  assert.equal(await g.removeTerm("API"), true);
+  assert.deepEqual(parseIndex(state.pages.Idx.content), []);
+  assert.deepEqual(state.pages["API-1"].content, [{ tag: "p", children: ["—"] }]);
+});
+
+test("removing a term: if listing it again fails too, the error keeps the cause and names the unlisted page", async () => {
+  const { g, state } = memTelegraph([{ term: "API", aliases: [], path: "API-1" }]);
+  state.failPage = "API-1";
+  state.onFail = () => { state.failIndexWrite = true; };
+  const err = await g.removeTerm("API").then(() => null, (e) => e);
+  assert.ok(err);
+  assert.match(err.message, /"API"/);
+  assert.match(err.message, /https:\/\/telegra\.ph\/API-1/);
+  assert.match(err.message, /no longer listed/);
+  assert.match(err.message, /network down/); // the original cause
+  assert.match(err.message, /index write failed/);
+  assert.match(err.cause?.message || "", /network down/);
+  assert.deepEqual(state.pages["API-1"].content, [{ tag: "p", children: ["about API"] }]);
 });

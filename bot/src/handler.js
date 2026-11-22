@@ -7,10 +7,12 @@
 // a channel deletes that channel's binding and post texts.
 //
 // KV layout (values are JSON):
-//   code:<code>        -> index path          (one-time connect codes, 1 day)
+//   code:<code>        -> {path, lang, usedBy?} (one-time connect codes, 1 day; usedBy once used)
 //   user:<userId>      -> index path          (the glossary a person connected)
 //   pending:<userId>   -> [chat]              (channels added before /start)
-//   chan:<chatId>      -> {path, owner, title, mode}
+//   chan:<chatId>      -> {path, owner, title, mode}  (deleted first when the bot leaves the channel)
+//   purge:<chatId>     -> {path, owner}       (the bot left; the channel's records are still being
+//                                              deleted. Removed once all are gone; the cron resumes it)
 //   gchans:<path>      -> [chatId]            (channels using a glossary)
 //   gver:<path>        -> version hash of the glossary last applied
 //   cron:next          -> gchans key the next cron run starts at (only when a run stops early)
@@ -25,6 +27,11 @@ const MAX_POSTS = 300; // remembered per channel
 // External requests (Telegraph fetches, Telegram edits) per run. The Workers free plan allows 50
 // per invocation (developers.cloudflare.com/workers/platform/limits/#subrequests); leave headroom.
 const MAX_REQUESTS_PER_RUN = 45;
+// KV operations a cron run may spend finishing removals. The KV free plan allows 1,000 per
+// invocation (developers.cloudflare.com/kv/platform/limits/); the rest is left to resync. One
+// removal costs at most MAX_POSTS + PURGE_FIXED_OPS, so a full one always fits.
+const MAX_PURGE_KV_OPS = 500;
+const PURGE_FIXED_OPS = 10; // purgeChannel without the per-post deletes (8), plus the cron's two reads
 const CODE_TTL = 24 * 3600;
 // Telegram edit failures that a retry cannot fix.
 const PERMANENT_EDIT_ERROR = /rights|can't be edited|not enough|MESSAGE_ID_INVALID|message to edit not found/i;
@@ -123,6 +130,9 @@ export function createBot(deps) {
   const trU = async (user) => T[await langOf(user)];
 
   const say = (chatId, text, extra = {}) => tg("sendMessage", { chat_id: chatId, text, ...extra }).catch(() => {});
+  // A message to send later: flows that save state collect these and send them once all state is saved.
+  const notice = (chatId, text, extra = {}) => ({ chatId, text, extra });
+  const send = async (notices) => { for (const n of notices) if (n) await say(n.chatId, n.text, n.extra); };
   // Deep link that opens "add to channel" with the edit right preselected (core.telegram.org/api/links).
   const addToChannelUrl = async () => `https://t.me/${await deps.username()}?startchannel&admin=edit_messages`;
 
@@ -135,8 +145,14 @@ export function createBot(deps) {
     return { code, start_url: `https://t.me/${bot}?start=${code}`, bot_username: bot };
   }
 
-  /** `canEdit: false`: bound, but not usable yet, so the owner gets the missing-right warning instead of "connected". */
+  /**
+   * Saves the binding and returns the owner's notice (or null), for the caller to send after all of
+   * its state is saved. `canEdit: false`: bound, but not usable yet, so the owner gets the
+   * missing-right warning instead of "connected".
+   */
   async function bindChannel(chat, owner, path, { canEdit = true } = {}) {
+    const unfinished = await kv.get(`purge:${chat.id}`);
+    if (unfinished) await purgeChannel(chat.id, unfinished); // re-added before a removal finished
     const prev = await kv.get(`chan:${chat.id}`);
     if (prev && prev.path !== path) {
       await unlistChannel(prev.path, chat.id);
@@ -148,10 +164,9 @@ export function createBot(deps) {
     const list = (await kv.get(`gchans:${path}`)) || [];
     if (!list.includes(String(chat.id))) await kv.put(`gchans:${path}`, [...list, String(chat.id)]);
     const g = await glossary(path);
-    if (owner) {
-      const s = await trU(owner);
-      await say(owner.id, canEdit ? s.chanOk(chat.title, g.title) : s.noEditRight(chat.title));
-    }
+    if (!owner) return null;
+    const s = await trU(owner);
+    return notice(owner.id, canEdit ? s.chanOk(chat.title, g.title) : s.noEditRight(chat.title));
   }
 
   /**
@@ -165,16 +180,18 @@ export function createBot(deps) {
     list.length ? await kv.put(`uchans:${userId}`, list) : await kv.del(`uchans:${userId}`);
   }
 
-  /** Called when a user connects a glossary: offer to move their channels that use another one. */
-  async function offerMoves(user, path) {
+  /** Called when a user connects a glossary: offers to move their channels that use another one (reads only). */
+  async function moveOffers(user, path) {
     const s = await trU(user);
+    const offers = [];
     let g;
     for (const id of (await kv.get(`uchans:${user.id}`)) || []) {
-      const b = await kv.get(`chan:${id}`);
+      const b = await bindingOf(id);
       if (!b || b.path === path) continue;
       g ||= await glossary(path);
-      await say(user.id, s.moveOffer(b.title, g.title), { reply_markup: { inline_keyboard: [[{ text: s.moveBtn, callback_data: `move:${id}` }]] } });
+      offers.push(notice(user.id, s.moveOffer(b.title, g.title), { reply_markup: { inline_keyboard: [[{ text: s.moveBtn, callback_data: `move:${id}` }]] } }));
     }
+    return offers;
   }
 
   async function unlistChannel(path, chatId) {
@@ -182,21 +199,55 @@ export function createBot(deps) {
     list.length ? await kv.put(`gchans:${path}`, list) : await kv.del(`gchans:${path}`);
   }
 
+  /**
+   * The bot left the channel. First `purge:<chat>` is written, so the removal can always be found
+   * and finished (Telegram's retry, the webhook having answered 500, or else the cron). Then
+   * purgeChannel deletes the binding, which is the mark every post writer checks after writing
+   * (stored()), and only then reads the post list. The message goes out after everything is deleted.
+   */
   async function unbindChannel(chat, by) {
     const b = await kv.get(`chan:${chat.id}`);
-    if (!b) return;
-    // State goes first and the binding last, so a failure part-way is finished by Telegram's retry
-    // (the webhook answers 500), which finds the binding still there. Messages go out at the end.
-    await unlistChannel(b.path, chat.id);
-    if (b.owner) await setOwned(b.owner, chat.id, false);
-    // The bot no longer belongs to the channel, so it must not keep the channel's post texts.
-    // One delete per remembered post (up to MAX_POSTS): the KV free plan allows 1,000 deletes a
-    // day (developers.cloudflare.com/kv/platform/pricing/), which is enough because removal is rare.
-    // A channel that only moves to another glossary never comes here: its posts stay valid.
-    for (const p of (await kv.get(`posts:${chat.id}`)) || []) await kv.del(`post:${chat.id}:${p.id}`);
-    await kv.del(`posts:${chat.id}`);
-    await kv.del(`chan:${chat.id}`);
-    if (b.owner) await say(b.owner, (await trU(by)).removed(chat.title));
+    let p;
+    if (b) await kv.put(`purge:${chat.id}`, (p = { path: b.path, owner: b.owner ?? null }));
+    else if (!(p = await kv.get(`purge:${chat.id}`))) return;
+    await purgeChannel(chat.id, p);
+    if (p.owner) await say(p.owner, (await trU(by)).removed(chat.title));
+  }
+
+  /** Deletes everything stored for a channel the bot left. Idempotent; `purge:<chat>` goes last. */
+  async function purgeChannel(chatId, p) {
+    await kv.del(`chan:${chatId}`); // the mark: from now on post writers delete what they wrote
+    await unlistChannel(p.path, chatId);
+    if (p.owner) await setOwned(p.owner, chatId, false);
+    await purgePosts(chatId);
+    await kv.del(`purge:${chatId}`);
+  }
+
+  /**
+   * The bot no longer belongs to the channel, so it must not keep the channel's post texts.
+   * One delete per remembered post (up to MAX_POSTS): the KV free plan allows 1,000 deletes a day
+   * (developers.cloudflare.com/kv/platform/pricing/), which is enough because removal is rare.
+   * A channel that only moves to another glossary never comes here: its posts stay valid.
+   */
+  async function purgePosts(chatId) {
+    for (const p of (await kv.get(`posts:${chatId}`)) || []) await kv.del(`post:${chatId}:${p.id}`);
+    await kv.del(`posts:${chatId}`);
+  }
+
+  const bindingOf = (chatId) => kv.get(`chan:${chatId}`);
+
+  /**
+   * Every writer of post:/posts: calls this AFTER its writes. KV has no transactions, so the check
+   * cannot come first: a removal could run between the check and the writes. Re-reading the
+   * binding after writing closes that. If this read still finds the binding, it happened before
+   * the removal's mark, so the writes did too, and the removal's later read of the post list sees
+   * them and deletes them. If not, the removal has begun (or ended), so the writer deletes what it
+   * wrote, plus the post list it may have re-created.
+   */
+  async function stored(chatId, ids) {
+    if (await bindingOf(chatId)) return;
+    for (const id of ids) await kv.del(`post:${chatId}:${id}`);
+    await purgePosts(chatId);
   }
 
   // ------------------------------------------------------------ linking posts
@@ -223,11 +274,12 @@ export function createBot(deps) {
     list.push({ id, v: version });
     for (const old of list.splice(0, Math.max(0, list.length - MAX_POSTS))) await kv.del(`post:${chatId}:${old.id}`);
     await kv.put(`posts:${chatId}`, list);
+    await stored(chatId, [id]); // the bot may have been removed while this post was handled
   }
 
   /** A post arrived (new, edited by its author, or forwarded to us). */
   async function handlePost(chatId, msg, { forwarded = false } = {}) {
-    const binding = await kv.get(`chan:${chatId}`);
+    const binding = await bindingOf(chatId);
     if (!binding) return null;
     const text = msg.text ?? msg.caption;
     if (!text || hasButtons(msg)) return 0;
@@ -270,8 +322,10 @@ export function createBot(deps) {
     if ((await kv.get(`gver:${path}`)) === g.version) return 0;
     let done = 0, complete = true, stop = false;
     for (const chatId of chats) {
-      const binding = await kv.get(`chan:${chatId}`);
+      const binding = await bindingOf(chatId);
+      if (!binding) continue; // the bot left this channel: its posts are being deleted
       const list = (await kv.get(`posts:${chatId}`)) || [];
+      const written = [];
       let dirty = false;
       for (const p of [...list].reverse()) {
         if (p.v === g.version) continue;
@@ -279,13 +333,16 @@ export function createBot(deps) {
         const rec = await kv.get(`post:${chatId}:${p.id}`);
         if (rec) {
           budget.requests--;
-          try { await apply(chatId, p.id, rec, g, binding?.mode, rec.applied || rec.entities); done++; await kv.put(`post:${chatId}:${p.id}`, rec); }
+          try { await apply(chatId, p.id, rec, g, binding.mode, rec.applied || rec.entities); done++; await kv.put(`post:${chatId}:${p.id}`, rec); written.push(p.id); }
           catch (e) { if (!/not found|can't be edited|MESSAGE_ID_INVALID/i.test(e.message)) { complete = false; stop = true; break; } }
         }
         p.v = g.version;
         dirty = true;
       }
-      if (dirty) await kv.put(`posts:${chatId}`, list);
+      if (dirty) {
+        await kv.put(`posts:${chatId}`, list);
+        await stored(chatId, written); // the bot may have been removed during these edits
+      }
       if (stop) break;
     }
     if (complete) await kv.put(`gver:${path}`, g.version);
@@ -322,7 +379,7 @@ export function createBot(deps) {
       // Messages are sent after the state is saved, so a retried update doesn't repeat them.
       const canEdit = m.can_edit_messages !== false;
       const path = await kv.get(`user:${from.id}`);
-      if (path) return bindChannel(chat, from, path, { canEdit });
+      if (path) return send([await bindChannel(chat, from, path, { canEdit })]);
       const pending = (await kv.get(`pending:${from.id}`)) || [];
       await kv.put(`pending:${from.id}`, [...pending.filter((c) => c.id !== chat.id), { id: chat.id, title: chat.title }], { ttl: 7 * 24 * 3600 });
       const sf = await trU(from);
@@ -335,10 +392,10 @@ export function createBot(deps) {
       const move = /^move:(-?\d+)$/.exec(q.data || "")?.[1];
       if (move) {
         await tg("answerCallbackQuery", { callback_query_id: q.id }).catch(() => {});
-        const b = await kv.get(`chan:${move}`), path = await kv.get(`user:${q.from.id}`);
+        const b = await bindingOf(move), path = await kv.get(`user:${q.from.id}`);
         if (q.message) await tg("editMessageReplyMarkup", { chat_id: q.message.chat.id, message_id: q.message.message_id, reply_markup: { inline_keyboard: [] } }).catch(() => {});
         if (!b || b.owner !== q.from.id || !path || b.path === path) return;
-        return bindChannel({ id: Number(move), title: b.title }, q.from, path);
+        return send([await bindChannel({ id: Number(move), title: b.title }, q.from, path)]);
       }
       const lang = /^lang:(he|en)$/.exec(q.data || "")?.[1];
       if (!lang) return tg("answerCallbackQuery", { callback_query_id: q.id }).catch(() => {});
@@ -354,7 +411,7 @@ export function createBot(deps) {
 
     if (msg.forward_origin?.type === "channel") {
       const chat = msg.forward_origin.chat;
-      const binding = await kv.get(`chan:${chat.id}`);
+      const binding = await bindingOf(chat.id);
       if (!binding || (binding.owner && binding.owner !== user.id)) return say(user.id, s.fwdUnknown);
       if (hasButtons(msg)) return say(user.id, s.fwdButtons);
       try { return say(user.id, s.fwdDone(await handlePost(chat.id, msg, { forwarded: true }))); }
@@ -365,24 +422,35 @@ export function createBot(deps) {
     if (cmd === "/start" && arg) {
       const entry = await kv.get(`code:${arg}`);
       if (!entry) return say(user.id, s.badCode);
-      const { path, lang } = typeof entry === "string" ? { path: entry } : entry; // codes made before lang was stored
-      // The code is used up only at the end, so a retried update (webhook answered 500) still works.
+      const { path, lang, usedBy } = typeof entry === "string" ? { path: entry } : entry; // codes made before lang was stored
+      // Used already. By this user: a redelivered update (or the link tapped again) whose messages
+      // went out once, so only the cleanup that follows them is finished, silently.
+      if (usedBy !== undefined) {
+        if (usedBy !== user.id) return say(user.id, s.badCode);
+        if (await kv.get(`pending:${user.id}`)) await kv.del(`pending:${user.id}`);
+        return;
+      }
+      // Every state change first, then the code is marked used (the commit point), then messages.
+      // A failure before the commit has sent nothing, and Telegram's retry redoes the idempotent steps.
       const g = await glossary(path);
       await kv.put(`user:${user.id}`, path);
       if (lang && !(await kv.get(`lang:${user.id}`))) await kv.put(`lang:${user.id}`, lang);
       const sl = await trU(user);
-      await say(user.id, sl.linked(g.title), { reply_markup: { inline_keyboard: [[{ text: sl.addBtn, url: await addToChannelUrl() }]] } });
-      for (const c of (await kv.get(`pending:${user.id}`)) || []) await bindChannel(c, user, path);
-      await kv.del(`pending:${user.id}`);
-      await offerMoves(user, path);
-      return kv.del(`code:${arg}`);
+      const pending = (await kv.get(`pending:${user.id}`)) || [];
+      const bound = [];
+      for (const c of pending) bound.push(await bindChannel(c, user, path));
+      const offers = await moveOffers(user, path);
+      await kv.put(`code:${arg}`, { path, lang: lang || null, usedBy: user.id }, { ttl: CODE_TTL });
+      await send([notice(user.id, sl.linked(g.title), { reply_markup: { inline_keyboard: [[{ text: sl.addBtn, url: await addToChannelUrl() }]] } }), ...bound, ...offers]);
+      // The pending list is still needed by a retry until the commit; after it, the branch above finishes this.
+      if (pending.length) await kv.del(`pending:${user.id}`);
+      return;
     }
     if (cmd === "/language") return say(user.id, CHOOSE_LANG, { reply_markup: LANG_BUTTONS });
     if (cmd === "/status") {
       const path = await kv.get(`user:${user.id}`);
-      const ids = path ? (await kv.get(`gchans:${path}`)) || [] : [];
-      const names = await Promise.all(ids.map(async (id) => (await kv.get(`chan:${id}`))?.title || id));
-      return say(user.id, s.status(names.map((n) => `• ${n}`)));
+      const channels = path ? await status(path) : [];
+      return say(user.id, s.status(channels.map((c) => `• ${c.title}`)));
     }
     if (cmd === "/start" || cmd === "/app") {
       const rows = [...(deps.webAppUrl ? [[{ text: s.openApp, web_app: { url: deps.webAppUrl } }]] : []), ...(cmd === "/start" ? LANG_BUTTONS.inline_keyboard : [])];
@@ -395,15 +463,37 @@ export function createBot(deps) {
   async function linkUser(user, path) {
     await glossary(path); // must exist
     await kv.put(`user:${user.id}`, path);
-    for (const c of (await kv.get(`pending:${user.id}`)) || []) await bindChannel(c, user, path);
-    await kv.del(`pending:${user.id}`);
-    await offerMoves(user, path);
+    const pending = (await kv.get(`pending:${user.id}`)) || [];
+    const bound = [];
+    for (const c of pending) bound.push(await bindChannel(c, user, path));
+    if (pending.length) await kv.del(`pending:${user.id}`);
+    await send([...bound, ...(await moveOffers(user, path))]);
     return { add_to_channel_url: await addToChannelUrl(), bot_username: await deps.username() };
   }
 
+  /** Channels bound to a glossary. One the bot is being removed from is still in gchans:* briefly, without a binding. */
   async function status(path) {
     const ids = (await kv.get(`gchans:${path}`)) || [];
-    return Promise.all(ids.map(async (id) => ({ id, title: (await kv.get(`chan:${id}`))?.title || id })));
+    const found = await Promise.all(ids.map(async (id) => ({ id, b: await bindingOf(id) })));
+    return found.filter((c) => c.b).map((c) => ({ id: c.id, title: c.b.title || c.id }));
+  }
+
+  /**
+   * Finishes removals that failed and that Telegram stopped retrying. One list per run (96 a day at
+   * the 15-minute schedule; the free plan allows 1,000), within MAX_PURGE_KV_OPS KV operations.
+   * A removal that would not fit in what is left waits for the next run.
+   */
+  async function resumePurges() {
+    let ops = MAX_PURGE_KV_OPS - 1;
+    for (const key of await kv.list("purge:")) {
+      const chatId = key.slice("purge:".length);
+      const posts = (await kv.get(`posts:${chatId}`)) || [];
+      const cost = posts.length + PURGE_FIXED_OPS;
+      if (cost > ops) continue; // a smaller one may still fit
+      ops -= cost;
+      const p = await kv.get(key);
+      try { if (p) await purgeChannel(chatId, p); } catch (e) { console.error("purge", chatId, e); }
+    }
   }
 
   /**
@@ -413,6 +503,7 @@ export function createBot(deps) {
    * run stops early, at most once per run.
    */
   async function cron() {
+    await resumePurges();
     const budget = { requests: MAX_REQUESTS_PER_RUN };
     const keys = await kv.list("gchans:"); // sorted
     if (!keys.length) return;

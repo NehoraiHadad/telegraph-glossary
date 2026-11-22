@@ -15,6 +15,8 @@ const ALIAS_SEP = " · ";
 // real call) to measure the JSON-serialized `content` parameter in UTF-8 bytes, which is what
 // call() in telegraph.js sends (JSON.stringify). Same constant and measure in glossary.py.
 export const PAGE_LIMIT_BYTES = 64 * 1024;
+// What a removed term's page shows (pages cannot be deleted). Same in glossary.py.
+export const BLANK_PAGE = [{ tag: "p", children: ["—"] }];
 
 export const contentBytes = (nodes) => new TextEncoder().encode(JSON.stringify(nodes)).length;
 
@@ -198,16 +200,33 @@ export class Glossary {
     const t = this.find(term);
     if (!t) return false;
     // Telegraph pages cannot be deleted: drop it from the index, then blank the page. Index first,
-    // so a failed index write (network, concurrent edit) leaves the term intact. If the blanking
-    // fails, the term is listed again, so the removal can simply be retried.
+    // so a failed index write (network, concurrent edit) leaves the term intact.
     await this.updateIndex((terms) => terms.filter((x) => x.path !== t.path));
     try {
-      await this.api("editPage", { path: t.path, title: t.term, ...this.pageMeta(), content: [{ tag: "p", children: ["—"] }] });
-    } catch (e) {
-      await this.updateIndex((terms) => [...terms.filter((x) => x.path !== t.path), t]);
-      throw e;
+      await this.api("editPage", { path: t.path, title: t.term, ...this.pageMeta(), content: BLANK_PAGE });
+    } catch (blankError) {
+      // The edit may have landed even though its answer was lost: then the removal is done.
+      // Otherwise (or if that can't be told) the term is listed again, so it can be retried.
+      if ((await this.isBlank(t.path)) === true) return true;
+      try {
+        await this.updateIndex((terms) => [...terms.filter((x) => x.path !== t.path), t]);
+      } catch (relistError) {
+        throw new Error(
+          `Removing "${t.term}" failed (${blankError.message}), and listing it again failed too (${relistError.message}). ` +
+          `The term is no longer listed, but its page still holds the definition: ${pageUrl(t.path)}`,
+          { cause: blankError },
+        );
+      }
+      throw blankError;
     }
     return true;
+  }
+
+  /** Whether the page shows what removeTerm writes; null if it can't be read. */
+  async isBlank(path) {
+    let page;
+    try { page = await call("getPage", { path, return_content: true }, this.fetch); } catch { return null; }
+    return textOf(page.content).trim() === textOf(BLANK_PAGE);
   }
 
   async rename(title) {
