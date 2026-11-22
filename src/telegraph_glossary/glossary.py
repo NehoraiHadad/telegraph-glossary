@@ -20,6 +20,8 @@ ALIAS_SEP = " · "
 # real call) to measure the JSON-serialized `content` parameter in UTF-8 bytes, which is what
 # `to_json` produces and `_call` sends. Same constant and measure in web/core/glossary.js.
 PAGE_LIMIT_BYTES = 64 * 1024
+# What a removed term's page shows (pages cannot be deleted). Same in web/core/glossary.js.
+BLANK_PAGE = [{"tag": "p", "children": ["—"]}]
 
 
 class TelegraphError(Exception):
@@ -390,13 +392,29 @@ class Glossary:
         if not entry:
             return False
         # Telegraph pages cannot be deleted: drop it from the index, then blank the page. Index
-        # first, so a failed index write (network, concurrent edit) leaves the term intact. If the
-        # blanking fails, the term is listed again, so the removal can simply be retried.
+        # first, so a failed index write (network, concurrent edit) leaves the term intact.
         self.update_index(lambda terms: [t for t in terms if t.path != entry.path])
         try:
-            self._call("editPage", {"path": entry.path, "title": entry.term, **self._meta(), "content": [{"tag": "p", "children": ["—"]}]})
-        except Exception:
-            self.update_index(lambda terms: [t for t in terms if t.path != entry.path] + [entry])
-            raise
+            self._call("editPage", {"path": entry.path, "title": entry.term, **self._meta(), "content": BLANK_PAGE})
+        except Exception as blank_error:
+            # The edit may have landed even though its answer was lost: then the removal is done.
+            # Otherwise (or if that can't be told) the term is listed again, so it can be retried.
+            if self._is_blank(entry.path) is not True:
+                try:
+                    self.update_index(lambda terms: [t for t in terms if t.path != entry.path] + [entry])
+                except Exception as relist_error:
+                    raise TelegraphError(
+                        f'Removing "{entry.term}" failed ({blank_error}), and listing it again failed too ({relist_error}). '
+                        f"The term is no longer listed, but its page still holds the definition: {entry.url}"
+                    ) from blank_error
+                raise
         self._changed()
         return True
+
+    def _is_blank(self, path: str) -> Optional[bool]:
+        """Whether the page shows what remove_term writes; None if it can't be read."""
+        try:
+            page = self._call("getPage", {"path": path, "return_content": True}, auth=False)
+        except Exception:  # noqa: BLE001 - unknown is an answer here
+            return None
+        return _text_of(page.get("content", [])).strip() == _text_of(BLANK_PAGE)

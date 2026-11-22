@@ -351,17 +351,18 @@ test("cron with few glossaries checks them all and stores no cursor", async () =
   assert.equal(await t.kv.get("cron:next"), null);
 });
 
-test("a retried /start or channel removal finishes the job", async () => {
+test("a retried /start or channel removal finishes the job without repeating a message", async () => {
   const t = setup();
+  const dms = () => t.calls.filter((c) => c.method === "sendMessage").map((c) => c.params.text);
   const { code } = await t.bot.connectCode("My-glossary-11-21");
   const start = { message: { chat: { id: 7, type: "private" }, from: user, text: `/start ${code}` } };
-  const del = t.kv.del;
-  t.kv.del = async () => { throw new Error("KV unavailable"); };
+  const { put, del } = t.kv;
+  t.kv.put = async () => { throw new Error("KV unavailable"); };
   await assert.rejects(t.bot.handleUpdate(start));
-  t.kv.del = del;
-  t.calls.length = 0;
+  t.kv.put = put;
   await t.bot.handleUpdate(start); // Telegram's retry: the code still works
-  assert.match(t.calls[0].params.text, /My glossary/);
+  assert.equal(dms().length, 1);
+  assert.match(dms()[0], /My glossary/);
   await t.bot.handleUpdate({ my_chat_member: { chat: channel, from: user, new_chat_member: { status: "administrator", can_edit_messages: true } } });
   await t.bot.handleUpdate({ channel_post: { chat: channel, message_id: 80, text: "API" } });
   const leave = { my_chat_member: { chat: channel, from: user, new_chat_member: { status: "left" } } };
@@ -370,6 +371,87 @@ test("a retried /start or channel removal finishes the job", async () => {
   await assert.rejects(t.bot.handleUpdate(leave));
   await t.bot.handleUpdate(leave); // the retry finds the binding and finishes
   for (const k of ["chan:-1001", "posts:-1001", "post:-1001:80", "uchans:7"]) assert.equal(await t.kv.get(k), null, k);
+  assert.equal(dms().filter((m) => /removed/.test(m)).length, 1);
+});
+
+test("/start: a failure in its last step sends nothing; the retry sends every message once, a further retry none", async () => {
+  const t = setup();
+  const dms = () => t.calls.filter((c) => c.method === "sendMessage").map((c) => c.params.text);
+  await t.bot.handleUpdate({ my_chat_member: { chat: channel, from: user, new_chat_member: { status: "administrator", can_edit_messages: true } } });
+  const { code } = await t.bot.connectCode("My-glossary-11-21");
+  t.calls.length = 0;
+  const start = { message: { chat: { id: 7, type: "private" }, from: user, text: `/start ${code}` } };
+  const { put, del } = t.kv;
+  // Using up the code is the last step: it fails once (the webhook answers 500).
+  let failed = false;
+  const failCodeOnce = (fn) => async (k, ...a) => { if (k.startsWith("code:") && !failed) { failed = true; throw new Error("KV unavailable"); } return fn(k, ...a); };
+  t.kv.put = failCodeOnce(put);
+  t.kv.del = failCodeOnce(del);
+  await assert.rejects(t.bot.handleUpdate(start));
+  assert.deepEqual(dms(), []);
+  t.kv.put = put;
+  t.kv.del = del;
+  await t.bot.handleUpdate(start); // Telegram's retry
+  await t.bot.handleUpdate(start); // and another delivery of the same update
+  const sent = dms();
+  assert.equal(sent.filter((m) => /Glossary “My glossary” connected/.test(m)).length, 1, sent.join("\n"));
+  assert.equal(sent.filter((m) => /Channel “Dev Notes” now uses/.test(m)).length, 1, sent.join("\n"));
+  assert.equal(sent.length, 2, sent.join("\n"));
+  assert.equal((await t.kv.get("chan:-1001")).path, "My-glossary-11-21");
+  assert.equal(await t.kv.get("pending:7"), null);
+  // Someone else with the same (used) link is told it no longer works.
+  await t.bot.handleUpdate({ message: { chat: { id: 8, type: "private" }, from: { id: 8, language_code: "en" }, text: `/start ${code}` } });
+  assert.match(dms().at(-1), /expired/);
+  assert.equal(await t.kv.get("user:8"), null);
+});
+
+test("removing the bot: a channel post handled during the removal leaves no post text behind", async () => {
+  const t = setup();
+  await connectAndAdd(t);
+  await t.bot.handleUpdate({ channel_post: { chat: channel, message_id: 80, text: "API" } });
+  const leave = { my_chat_member: { chat: channel, from: user, new_chat_member: { status: "left" } } };
+  // The removal fails after its first step (Telegram will retry it); a post arrives in between.
+  const { del } = t.kv;
+  let n = 0;
+  t.kv.del = async (k) => { if (k.startsWith("post") && n++ === 0) throw new Error("KV unavailable"); return del(k); };
+  await assert.rejects(t.bot.handleUpdate(leave));
+  t.kv.del = del;
+  t.calls.length = 0;
+  await t.bot.handleUpdate({ channel_post: { chat: channel, message_id: 81, text: "API again" } });
+  assert.equal(edits(t.calls).length, 0); // the channel is being removed: not edited, not stored
+  await t.bot.handleUpdate(leave); // the retry finishes the removal
+  assert.deepEqual([...t.store.keys()].filter((k) => k.includes("-1001")), []);
+});
+
+test("bot re-added before a failed removal finished: the old records are deleted and the channel works again", async () => {
+  const t = setup();
+  await connectAndAdd(t);
+  await t.bot.handleUpdate({ channel_post: { chat: channel, message_id: 80, text: "API" } });
+  const { del } = t.kv;
+  t.kv.del = async (k) => { if (k.startsWith("post")) throw new Error("KV unavailable"); return del(k); };
+  await assert.rejects(t.bot.handleUpdate({ my_chat_member: { chat: channel, from: user, new_chat_member: { status: "left" } } }));
+  t.kv.del = del;
+  await t.bot.handleUpdate({ my_chat_member: { chat: channel, from: user, new_chat_member: { status: "administrator", can_edit_messages: true } } });
+  assert.equal(await t.kv.get("post:-1001:80"), null);
+  assert.equal((await t.kv.get("chan:-1001")).removing, undefined);
+  assert.deepEqual(await t.kv.get("gchans:My-glossary-11-21"), ["-1001"]);
+  t.calls.length = 0;
+  await t.bot.handleUpdate({ channel_post: { chat: channel, message_id: 81, text: "API" } });
+  assert.equal(edits(t.calls).length, 1);
+});
+
+test("removing the bot: a channel post already in flight does not store its text after the removal", async () => {
+  const t = setup();
+  await connectAndAdd(t);
+  const leave = { my_chat_member: { chat: channel, from: user, new_chat_member: { status: "left" } } };
+  // The post's edit is slow; the removal runs while it is in flight.
+  const slow = createBot({
+    kv: t.kv, username: async () => "GlossBot",
+    tg: async (m) => { if (m.startsWith("edit")) await t.bot.handleUpdate(leave); return {}; },
+    getPage: async () => ({ title: "My glossary", content: buildIndex([{ term: "API", aliases: [], path: "API-1" }], "My glossary") }),
+  });
+  await slow.handleUpdate({ channel_post: { chat: channel, message_id: 82, text: "Hello API" } });
+  assert.deepEqual([...t.store.keys()].filter((k) => k.includes("-1001")), []);
 });
 
 test("removing the bot deletes the channel's remembered post texts; moving it keeps them", async () => {

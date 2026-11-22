@@ -26,7 +26,9 @@ class MemTelegraph(Glossary):
         self.index_writes = 0
         self.changed = 0
         self.fail_index_write = False
-        self.fail_page = None  # path whose editPage fails
+        self.fail_page = None  # path whose editPage fails (on_fail runs then)
+        self.on_fail = None
+        self.lost_page = None  # path whose editPage is applied, but the answer is an error
 
     def _call(self, method, params=None, auth=True):
         p = params or {}
@@ -35,8 +37,13 @@ class MemTelegraph(Glossary):
         if method in ("createPage", "editPage") and sent_bytes(p["content"]) > LIMIT:
             raise TelegraphError("CONTENT_TOO_BIG")
         if method == "editPage" and p["path"] == self.fail_page:
+            if self.on_fail:
+                self.on_fail()
             raise TelegraphError("network down")
         if method == "editPage" and p["path"] == "Idx" and self.fail_index_write:
+            raise TelegraphError("index write failed")
+        if method == "editPage" and p["path"] == self.lost_page:
+            self.pages[p["path"]] = {"title": p["title"], "content": p["content"]}
             raise TelegraphError("network down")
         if method == "createPage":
             path = f"{p['title']}-{len(self.pages)}"
@@ -168,6 +175,27 @@ def test_remove_term_relists_the_term_when_blanking_fails():
     assert [t.term for t in g.refresh()] == ["API"]  # still listed, so the removal can be retried
     g.fail_page = None
     assert g.remove_term("API") and g.refresh() == []
+
+
+def test_remove_term_does_not_relist_a_page_blanked_although_the_answer_was_lost():
+    g = MemTelegraph([Entry("API", "API-1")])
+    g.lost_page = "API-1"
+    assert g.remove_term("API")
+    assert g.refresh() == [] and g.pages["API-1"]["content"] == [{"tag": "p", "children": ["—"]}]
+    assert g.changed == 1
+
+
+def test_remove_term_failed_relist_keeps_the_cause_and_names_the_unlisted_page():
+    g = MemTelegraph([Entry("API", "API-1")])
+    g.fail_page = "API-1"
+    g.on_fail = lambda: setattr(g, "fail_index_write", True)
+    with pytest.raises(TelegraphError) as e:
+        g.remove_term("API")
+    msg = str(e.value)
+    assert '"API"' in msg and "https://telegra.ph/API-1" in msg and "no longer listed" in msg
+    assert "network down" in msg and "index write failed" in msg
+    assert isinstance(e.value.__cause__, TelegraphError) and str(e.value.__cause__) == "network down"
+    assert g.pages["API-1"]["content"] == [{"tag": "p", "children": ["about API"]}]
 
 
 def test_save_terms_does_not_list_an_item_whose_name_a_failed_update_still_uses():
