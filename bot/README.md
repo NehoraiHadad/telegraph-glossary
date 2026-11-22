@@ -9,6 +9,10 @@ updates the originals.
 The bot never sees anyone's Telegraph key. Glossaries are public pages, so all it stores is
 *which channel uses which glossary*.
 
+To move a channel to another glossary, connect the other glossary. The bot then offers to move
+the channels you connected before ("Move it here"). Adding the bot to the channel again does
+nothing, because Telegram sends no update when the bot is already an admin there.
+
 The bot speaks Hebrew or English. Connecting from the web app sets the web app's language;
 otherwise it follows the Telegram app language. The user can change it any time (buttons on
 Start, or `/language`).

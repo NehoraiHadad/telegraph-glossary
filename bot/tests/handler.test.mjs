@@ -227,3 +227,35 @@ test("/app and /start offer the Mini App button when configured", async () => {
   await bot.handleUpdate({ message: { chat: { id: 7, type: "private" }, from: user, text: "/app" } });
   assert.deepEqual(calls.at(-1).params.reply_markup.inline_keyboard[0][0].web_app, { url: "https://example.org/app/" });
 });
+
+test("a channel connected to another glossary is offered and moved on connect (no my_chat_member comes)", async () => {
+  const t = setup();
+  await connectAndAdd(t); // Dev Notes -> My-glossary-11-21
+  t.calls.length = 0;
+  // The user connects a second glossary. The bot is already an admin in Dev Notes, so Telegram sends nothing.
+  await t.bot.linkUser(user, "Second-11-22");
+  const offer = t.calls.find((c) => c.method === "sendMessage");
+  assert.match(offer.params.text, /Dev Notes/);
+  const data = offer.params.reply_markup.inline_keyboard[0][0].callback_data;
+  assert.equal(data, "move:-1001");
+  // Someone else pressing the button changes nothing.
+  await t.bot.handleUpdate({ callback_query: { id: "q0", data, from: { id: 99 }, message: { chat: { id: 99 }, message_id: 4 } } });
+  assert.equal((await t.kv.get("chan:-1001")).path, "My-glossary-11-21");
+  await t.bot.handleUpdate({ callback_query: { id: "q1", data, from: user, message: { chat: { id: 7 }, message_id: 5 } } });
+  assert.equal((await t.kv.get("chan:-1001")).path, "Second-11-22");
+  assert.deepEqual(await t.kv.get("gchans:Second-11-22"), ["-1001"]);
+  assert.equal(await t.kv.get("gchans:My-glossary-11-21"), null);
+  assert.ok(t.calls.some((c) => c.method === "sendMessage" && /Dev Notes/.test(c.params.text) && c.params.chat_id === 7 && !c.params.reply_markup));
+  // Connecting the same glossary again offers nothing.
+  t.calls.length = 0;
+  await t.bot.linkUser(user, "Second-11-22");
+  assert.equal(t.calls.filter((c) => c.method === "sendMessage").length, 0);
+});
+
+test("removing the bot from a channel forgets it for move offers", async () => {
+  const t = setup();
+  await connectAndAdd(t);
+  assert.deepEqual(await t.kv.get("uchans:7"), ["-1001"]);
+  await t.bot.handleUpdate({ my_chat_member: { chat: channel, from: user, new_chat_member: { status: "left" } } });
+  assert.equal(await t.kv.get("uchans:7"), null);
+});

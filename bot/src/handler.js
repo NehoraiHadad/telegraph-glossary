@@ -32,6 +32,8 @@ const T = {
     chanOk: (c, g) => `✅ הערוץ „${c}” מחובר למילון „${g}”.\nכל פוסט חדש יקבל קישורים אוטומטית. כשתוסיף מונחים, אעדכן גם פוסטים קודמים.\n\nפוסטים ישנים מלפני החיבור? פשוט תעביר (forward) אותם אליי.`,
     chanNoGlossary: (c) => `נוספתי לערוץ „${c}”, אבל עוד לא ידוע לי איזה מילון לחבר. פתח את אתר המילון ← הגדרות ← "קישור אוטומטי בערוץ".`,
     noEditRight: (c) => `⚠️ אין לי הרשאה לערוך הודעות בערוץ „${c}”. תן לי את ההרשאה „עריכת הודעות של אחרים” בהגדרות המנהלים.`,
+    moveOffer: (c, g) => `הערוץ „${c}” מחובר כרגע למילון אחר. להעביר אותו למילון „${g}”?`,
+    moveBtn: "העברה לכאן",
     removed: (c) => `הוסרתי מהערוץ „${c}”, הוא כבר לא מחובר.`,
     status: (list) => (list.length ? `ערוצים מחוברים:\n${list.join("\n")}` : "אין ערוצים מחוברים."),
     fwdDone: (n) => (n ? `✅ עודכן (${n} מונחים).` : "אין בפוסט הזה מונחים מהמילון."),
@@ -49,6 +51,8 @@ const T = {
     chanOk: (c, g) => `✅ Channel “${c}” now uses the glossary “${g}”.\nEvery new post gets links automatically, and when you add terms I update earlier posts too.\n\nOlder posts from before? Just forward them to me.`,
     chanNoGlossary: (c) => `I was added to “${c}”, but I don't know which glossary to use yet. Open the glossary web app → Settings → "Auto-link my channel".`,
     noEditRight: (c) => `⚠️ I can't edit messages in “${c}”. Please give me the “Edit messages of others” admin right.`,
+    moveOffer: (c, g) => `Channel “${c}” is connected to another glossary. Move it to “${g}”?`,
+    moveBtn: "Move it here",
     removed: (c) => `I was removed from “${c}”, so it's no longer connected.`,
     status: (list) => (list.length ? `Connected channels:\n${list.join("\n")}` : "No connected channels."),
     fwdDone: (n) => (n ? `✅ Updated (${n} terms).` : "No glossary terms in this post."),
@@ -126,12 +130,40 @@ export function createBot(deps) {
 
   async function bindChannel(chat, owner, path) {
     const prev = await kv.get(`chan:${chat.id}`);
-    if (prev && prev.path !== path) await unlistChannel(prev.path, chat.id);
+    if (prev && prev.path !== path) {
+      await unlistChannel(prev.path, chat.id);
+      await kv.del(`gver:${path}`); // the next resync must also cover this channel's posts
+    }
+    if (prev?.owner && prev.owner !== owner?.id) await setOwned(prev.owner, chat.id, false);
+    if (owner) await setOwned(owner.id, chat.id, true);
     await kv.put(`chan:${chat.id}`, { path, owner: owner?.id, lang: owner ? await langOf(owner) : "en", title: chat.title, mode: prev?.mode || "first" });
     const list = (await kv.get(`gchans:${path}`)) || [];
     if (!list.includes(String(chat.id))) await kv.put(`gchans:${path}`, [...list, String(chat.id)]);
     const g = await glossary(path);
     if (owner) await say(owner.id, (await trU(owner)).chanOk(chat.title, g.title));
+  }
+
+  /**
+   * Channels each user connected. Telegram sends my_chat_member only when the bot's status changes,
+   * so re-adding the bot to a channel where it is already an admin produces no update at all. To move
+   * such a channel to another glossary the bot has to know it already, and offer the move itself.
+   */
+  async function setOwned(userId, chatId, on) {
+    const list = ((await kv.get(`uchans:${userId}`)) || []).filter((id) => id !== String(chatId));
+    if (on) list.push(String(chatId));
+    list.length ? await kv.put(`uchans:${userId}`, list) : await kv.del(`uchans:${userId}`);
+  }
+
+  /** Called when a user connects a glossary: offer to move their channels that use another one. */
+  async function offerMoves(user, path) {
+    const s = await trU(user);
+    let g;
+    for (const id of (await kv.get(`uchans:${user.id}`)) || []) {
+      const b = await kv.get(`chan:${id}`);
+      if (!b || b.path === path) continue;
+      g ||= await glossary(path);
+      await say(user.id, s.moveOffer(b.title, g.title), { reply_markup: { inline_keyboard: [[{ text: s.moveBtn, callback_data: `move:${id}` }]] } });
+    }
   }
 
   async function unlistChannel(path, chatId) {
@@ -144,6 +176,7 @@ export function createBot(deps) {
     if (!b) return;
     await unlistChannel(b.path, chat.id);
     await kv.del(`chan:${chat.id}`);
+    if (b.owner) await setOwned(b.owner, chat.id, false);
     if (b.owner) await say(b.owner, (await trU(by)).removed(chat.title));
   }
 
@@ -246,6 +279,14 @@ export function createBot(deps) {
 
     if (u.callback_query) {
       const q = u.callback_query;
+      const move = /^move:(-?\d+)$/.exec(q.data || "")?.[1];
+      if (move) {
+        await tg("answerCallbackQuery", { callback_query_id: q.id }).catch(() => {});
+        const b = await kv.get(`chan:${move}`), path = await kv.get(`user:${q.from.id}`);
+        if (q.message) await tg("editMessageReplyMarkup", { chat_id: q.message.chat.id, message_id: q.message.message_id, reply_markup: { inline_keyboard: [] } }).catch(() => {});
+        if (!b || b.owner !== q.from.id || !path || b.path === path) return;
+        return bindChannel({ id: Number(move), title: b.title }, q.from, path);
+      }
       const lang = /^lang:(he|en)$/.exec(q.data || "")?.[1];
       if (!lang) return tg("answerCallbackQuery", { callback_query_id: q.id }).catch(() => {});
       await kv.put(`lang:${q.from.id}`, lang);
@@ -280,7 +321,7 @@ export function createBot(deps) {
       await say(user.id, sl.linked(g.title), { reply_markup: { inline_keyboard: [[{ text: sl.addBtn, url: await addToChannelUrl() }]] } });
       for (const c of (await kv.get(`pending:${user.id}`)) || []) await bindChannel(c, user, path);
       await kv.del(`pending:${user.id}`);
-      return;
+      return offerMoves(user, path);
     }
     if (cmd === "/language") return say(user.id, CHOOSE_LANG, { reply_markup: LANG_BUTTONS });
     if (cmd === "/status") {
@@ -302,6 +343,7 @@ export function createBot(deps) {
     await kv.put(`user:${user.id}`, path);
     for (const c of (await kv.get(`pending:${user.id}`)) || []) await bindChannel(c, user, path);
     await kv.del(`pending:${user.id}`);
+    await offerMoves(user, path);
     return { add_to_channel_url: await addToChannelUrl(), bot_username: await deps.username() };
   }
 
