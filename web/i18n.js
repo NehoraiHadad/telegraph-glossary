@@ -12,6 +12,13 @@ export const STRINGS = {
     keyPh: "הדבק את המפתח",
     open: "פתיחה",
     free: "חינם, בלי הרשמה. המילון נשמר ב-Telegraph.",
+    howTitle: "איך זה עובד",
+    how: [
+      "יוצרים מילון ומוסיפים מונחים.",
+      "מוסיפים את בוט הטלגרם שלנו לערוץ שלך, בלשונית „ערוץ”.",
+      "מפרסמים כרגיל. הבוט מוסיף את הקישורים תוך שניות, ומעדכן פוסטים קודמים כשמונח משתנה.",
+    ],
+    howNoChannel: "בלי ערוץ? לשונית „פוסט” מעתיקה את הפוסט עם הקישורים.",
 
     // shell
     tabTerms: "מונחים",
@@ -136,6 +143,13 @@ export const STRINGS = {
     keyPh: "Paste the key",
     open: "Open",
     free: "Free, no sign-up. The glossary is stored on Telegraph.",
+    howTitle: "How it works",
+    how: [
+      "Create a glossary and add terms.",
+      "Add our Telegram bot to your channel, from the Channel tab.",
+      "Post as usual. The bot adds the links within seconds, and updates earlier posts when a term changes.",
+    ],
+    howNoChannel: "No channel? The Post tab copies your post with its links.",
 
     tabTerms: "Terms",
     tabPost: "Post",
