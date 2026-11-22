@@ -22,8 +22,9 @@ for the CLI and MCP server. It never reaches the bot.
 | Channel bot | `bot/` | Cloudflare Worker + KV |
 | CLI + MCP server | `src/telegraph_glossary/` | the user's machine |
 
-The bot stores only which channel uses which glossary (public index paths) and the recent
-post IDs it may re-edit. KV key prefixes are in `bot/src/handler.js`.
+The bot stores which channel uses which glossary (public index paths) and the text of each
+channel's last 300 posts, because Telegram's edit methods need the full text. Removing the bot
+from a channel deletes that channel's records. KV key prefixes are in `bot/src/handler.js`.
 
 ## Rules that the code does not show
 
@@ -40,9 +41,13 @@ post IDs it may re-edit. KV key prefixes are in `bot/src/handler.js`.
   change the format, and keep old glossaries readable.
 * **Index writes go through `updateIndex` / `update_index`.** Telegraph has no compare-and-swap,
   so a plain read-modify-write loses concurrent edits (web app plus an agent, two devices). The
-  helper writes, waits for writes in flight, re-reads and re-applies. The function passed to it
-  must be idempotent (filter or replace by path).
-* **Telegraph pages cannot be deleted.** Removing a term blanks its page and drops it from the index.
+  helper writes, waits for writes in flight, re-reads and re-applies. This narrows the window but
+  cannot close it: a write slower than the wait can still drop a change. The function passed to
+  it must be idempotent (filter or replace by path).
+* **Telegraph pages cannot be deleted.** Removing a term drops it from the index first, then
+  blanks its page, so a failed index write never loses a listed definition.
+* **An index page holds at most 64 KB.** Writers check the new index size before writing any
+  term page (`checkIndexFits` / `check_index_fits`).
 * **The bot imports `web/core/`.** A change there is a bot change too: it triggers a Worker
   deploy and must pass `bot/tests`.
 * **Strings are bilingual.** The web app strings are in `web/i18n.js`, and the bot's are in

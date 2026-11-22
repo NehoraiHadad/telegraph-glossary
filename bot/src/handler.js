@@ -1,8 +1,10 @@
 // Channel auto-link bot. Platform independent: all I/O is injected, so the same
 // logic runs in the Cloudflare Worker (index.js) and in tests.
 //
-// The bot never holds anyone's Telegraph key. Glossaries are public pages, so all
-// it needs is "channel X uses the glossary whose index page is P".
+// The bot never holds anyone's Telegraph key. Glossaries are public pages, so it
+// stores which channel uses which glossary, plus the text of each channel's last
+// MAX_POSTS posts (Telegram's edit methods need the full text). Removing the bot from
+// a channel deletes that channel's binding and post texts.
 //
 // KV layout (values are JSON):
 //   code:<code>        -> index path          (one-time connect codes, 1 day)
@@ -24,6 +26,8 @@ const MAX_POSTS = 300; // remembered per channel
 const MAX_REQUESTS_PER_RUN = 45;
 const CRON_PERIOD_MS = 15 * 60_000; // matches the cron trigger in wrangler.toml
 const CODE_TTL = 24 * 3600;
+// Telegram edit failures that a retry cannot fix.
+const PERMANENT_EDIT_ERROR = /rights|can't be edited|not enough|MESSAGE_ID_INVALID|message to edit not found/i;
 
 const T = {
   he: {
@@ -131,7 +135,8 @@ export function createBot(deps) {
     return { code, start_url: `https://t.me/${bot}?start=${code}`, bot_username: bot };
   }
 
-  async function bindChannel(chat, owner, path) {
+  /** `confirm: false` skips the "connected" message (the channel is bound but not yet usable). */
+  async function bindChannel(chat, owner, path, { confirm = true } = {}) {
     const prev = await kv.get(`chan:${chat.id}`);
     if (prev && prev.path !== path) {
       await unlistChannel(prev.path, chat.id);
@@ -143,7 +148,7 @@ export function createBot(deps) {
     const list = (await kv.get(`gchans:${path}`)) || [];
     if (!list.includes(String(chat.id))) await kv.put(`gchans:${path}`, [...list, String(chat.id)]);
     const g = await glossary(path);
-    if (owner) await say(owner.id, (await trU(owner)).chanOk(chat.title, g.title));
+    if (owner && confirm) await say(owner.id, (await trU(owner)).chanOk(chat.title, g.title));
   }
 
   /**
@@ -179,6 +184,12 @@ export function createBot(deps) {
     if (!b) return;
     await unlistChannel(b.path, chat.id);
     await kv.del(`chan:${chat.id}`);
+    // The bot no longer belongs to the channel, so it must not keep the channel's post texts.
+    // One delete per remembered post (up to MAX_POSTS): the KV free plan allows 1,000 deletes a
+    // day (developers.cloudflare.com/kv/platform/pricing/), which is enough because removal is rare.
+    // A channel that only moves to another glossary never comes here: its posts stay valid.
+    for (const p of (await kv.get(`posts:${chat.id}`)) || []) await kv.del(`post:${chat.id}:${p.id}`);
+    await kv.del(`posts:${chat.id}`);
     if (b.owner) await setOwned(b.owner, chat.id, false);
     if (b.owner) await say(b.owner, (await trU(by)).removed(chat.title));
   }
@@ -277,18 +288,36 @@ export function createBot(deps) {
   }
 
   // ------------------------------------------------------------ updates
+  /**
+   * A channel post the bot can never edit (missing right, post owned by another bot, post gone).
+   * handlePost already told the owner where that helps. Throwing would make the webhook answer 500
+   * and Telegram redeliver the same update that fails the same way, so it is swallowed here.
+   */
+  async function channelPost(msg) {
+    try { return await handlePost(msg.chat.id, msg); }
+    catch (e) { if (!PERMANENT_EDIT_ERROR.test(e.message)) throw e; }
+  }
+
+  /**
+   * Throws only on errors a retry can fix (Telegraph or Telegram unreachable, KV failure), so the
+   * webhook can answer 500 and Telegram redelivers. A redelivered update is harmless: an edit that
+   * changes nothing is "not modified", and remember() replaces a post's record by id.
+   */
   async function handleUpdate(u) {
-    if (u.channel_post) return handlePost(u.channel_post.chat.id, u.channel_post);
-    if (u.edited_channel_post) return handlePost(u.edited_channel_post.chat.id, u.edited_channel_post);
+    if (u.channel_post) return channelPost(u.channel_post);
+    if (u.edited_channel_post) return channelPost(u.edited_channel_post);
 
     if (u.my_chat_member) {
       const { chat, from, new_chat_member: m } = u.my_chat_member;
       if (chat.type !== "channel") return;
       if (["left", "kicked"].includes(m.status)) return unbindChannel(chat, from);
       if (m.status !== "administrator") return;
-      if (m.can_edit_messages === false) await say(from.id, (await trU(from)).noEditRight(chat.title));
+      // Bind anyway: Telegram promises no update when rights change, so the channel must work as
+      // soon as the right is granted. Until then only the warning is true, not "connected".
+      const canEdit = m.can_edit_messages !== false;
+      if (!canEdit) await say(from.id, (await trU(from)).noEditRight(chat.title));
       const path = await kv.get(`user:${from.id}`);
-      if (path) return bindChannel(chat, from, path);
+      if (path) return bindChannel(chat, from, path, { confirm: canEdit });
       const pending = (await kv.get(`pending:${from.id}`)) || [];
       await kv.put(`pending:${from.id}`, [...pending.filter((c) => c.id !== chat.id), { id: chat.id, title: chat.title }], { ttl: 7 * 24 * 3600 });
       return say(from.id, (await trU(from)).chanNoGlossary(chat.title));

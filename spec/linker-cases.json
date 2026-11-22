@@ -5,7 +5,10 @@
     { "term": "פייתון", "aliases": ["Python"], "url": "https://telegra.ph/Python-01" },
     { "term": "למידת מכונה", "aliases": ["machine learning", "ML"], "url": "https://telegra.ph/ML-01" },
     { "term": "מודל", "aliases": [], "url": "https://telegra.ph/Model-01" },
-    { "term": "C++", "aliases": [], "url": "https://telegra.ph/Cpp-01" }
+    { "term": "C++", "aliases": [], "url": "https://telegra.ph/Cpp-01" },
+    { "term": "iron", "aliases": [], "url": "https://telegra.ph/Iron-01" },
+    { "term": "silk", "aliases": [], "url": "https://telegra.ph/Silk-01" },
+    { "term": "kilo", "aliases": [], "url": "https://telegra.ph/Kilo-01" }
   ],
   "cases": [
     {
@@ -111,6 +114,36 @@
       "text": "line one API\nline two",
       "expected_html": "line one <a href=\"https://telegra.ph/API-01\">API</a>\nline two",
       "expected_found": ["API"]
+    },
+    {
+      "name": "case rule is Unicode simple case folding: dotless i (U+0131) does not match i",
+      "text": "\u0131ron and IRON",
+      "expected_html": "\u0131ron and <a href=\"https://telegra.ph/Iron-01\">IRON</a>",
+      "expected_found": ["iron"]
+    },
+    {
+      "name": "dotted capital I (U+0130) does not match i",
+      "text": "\u0130ron only",
+      "expected_html": "\u0130ron only",
+      "expected_found": []
+    },
+    {
+      "name": "long s (U+017F) matches s and keeps the original character",
+      "text": "pure \u017Filk here",
+      "expected_html": "pure <a href=\"https://telegra.ph/Silk-01\">\u017Filk</a> here",
+      "expected_found": ["silk"]
+    },
+    {
+      "name": "Kelvin sign (U+212A) matches k and keeps the original character",
+      "text": "one \u212Ailo",
+      "expected_html": "one <a href=\"https://telegra.ph/Kilo-01\">\u212Ailo</a>",
+      "expected_found": ["kilo"]
+    },
+    {
+      "name": "hebrew prefixes mixed with folded and unfolded latin forms",
+      "text": "\u05d1\u212Ailo \u05d5\u05d1-IRON \u0131ron",
+      "expected_html": "\u05d1<a href=\"https://telegra.ph/Kilo-01\">\u212Ailo</a> \u05d5\u05d1-<a href=\"https://telegra.ph/Iron-01\">IRON</a> \u0131ron",
+      "expected_found": ["kilo", "iron"]
     }
   ]
 }

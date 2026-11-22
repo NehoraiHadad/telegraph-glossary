@@ -57,7 +57,8 @@ Agents that browse can read [`llms.txt`](web/llms.txt). The CLI does the same fr
 
 ## For the owner: deploy
 
-Both deploy on every push to `main`, and no deploy secrets live in GitHub.
+The site deploys on every push to `main`. The bot deploys only when `bot/*` or `web/core/*` change.
+No deploy secrets live in GitHub.
 
 1. **Site:** `.github/workflows/deploy.yml` publishes `web/` to GitHub Pages
    (one-time: **Settings → Pages → Source: GitHub Actions**).

@@ -334,3 +334,60 @@ test("cron stays within the request budget and reaches every glossary in turn", 
   }
   assert.equal(seen.size, paths.length);
 });
+
+test("removing the bot deletes the channel's remembered post texts; moving it keeps them", async () => {
+  const t = setup();
+  await connectAndAdd(t);
+  for (const id of [50, 51]) await t.bot.handleUpdate({ channel_post: { chat: channel, message_id: id, text: "Hello API" } });
+  assert.equal((await t.kv.get("posts:-1001")).length, 2);
+  // moving to another glossary keeps the posts
+  const { code } = await t.bot.connectCode("Other-glossary-11-22");
+  await t.bot.handleUpdate({ message: { chat: { id: 7, type: "private" }, from: user, text: `/start ${code}` } });
+  await t.bot.handleUpdate({ callback_query: { id: "q", from: user, data: "move:-1001" } });
+  assert.equal((await t.kv.get("chan:-1001")).path, "Other-glossary-11-22");
+  assert.equal((await t.kv.get("posts:-1001")).length, 2);
+  assert.ok(await t.kv.get("post:-1001:50"));
+  // removal deletes them
+  await t.bot.handleUpdate({ my_chat_member: { chat: channel, from: user, new_chat_member: { status: "left" } } });
+  assert.deepEqual([...t.store.keys()].filter((k) => k.includes("-1001")), []);
+});
+
+test("bot added without the edit right: warns, binds, but does not claim the channel works", async () => {
+  const t = setup();
+  const { code } = await t.bot.connectCode("My-glossary-11-21");
+  await t.bot.handleUpdate({ message: { chat: { id: 7, type: "private" }, from: user, text: `/start ${code}` } });
+  t.calls.length = 0;
+  await t.bot.handleUpdate({ my_chat_member: { chat: channel, from: user, new_chat_member: { status: "administrator", can_edit_messages: false } } });
+  assert.equal((await t.kv.get("chan:-1001")).path, "My-glossary-11-21");
+  const dms = t.calls.filter((c) => c.method === "sendMessage").map((c) => c.params.text);
+  assert.equal(dms.length, 1);
+  assert.match(dms[0], /can't edit messages/);
+});
+
+test("the same channel_post delivered twice (webhook retry) edits once and is remembered once", async () => {
+  const t = setup();
+  await connectAndAdd(t);
+  t.calls.length = 0;
+  const post = { chat: channel, message_id: 50, text: "Hello API" };
+  await t.bot.handleUpdate({ channel_post: post });
+  assert.equal(edits(t.calls).length, 1);
+  // Telegram redelivers the original (no links in it): the edit repeats identically, Telegram says "not modified"
+  t.calls.length = 0;
+  await t.bot.handleUpdate({ channel_post: post });
+  const [e] = edits(t.calls);
+  assert.equal(links(e.params.entities).length, 1);
+  assert.equal((await t.kv.get("posts:-1001")).length, 1);
+});
+
+test("a post the bot can never edit does not fail the update (no endless webhook retries); transient errors do", async () => {
+  const t = setup();
+  await connectAndAdd(t);
+  const bad = createBot({
+    kv: t.kv, username: async () => "GlossBot", now: () => 0,
+    tg: async (m) => { if (m.startsWith("edit")) throw new Error("Bad Request: not enough rights to edit the message"); return {}; },
+    getPage: async () => ({ title: "My glossary", content: buildIndex([{ term: "API", aliases: [], path: "API-1" }], "My glossary") }),
+  });
+  await bad.handleUpdate({ channel_post: { chat: channel, message_id: 60, text: "Hello API" } });
+  t.failEdits(true);
+  await assert.rejects(t.bot.handleUpdate({ channel_post: { chat: channel, message_id: 61, text: "Hello API" } }), /Bad Gateway/);
+});

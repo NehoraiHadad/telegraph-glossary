@@ -6,8 +6,10 @@ link-preview setting stay as they were. When the glossary changes, the bot re-ap
 the posts it remembers (the last 300 per channel). Older posts can be forwarded to the bot, and it
 updates the originals.
 
-The bot never sees anyone's Telegraph key. Glossaries are public pages, so all it stores is
-*which channel uses which glossary*.
+The bot never sees anyone's Telegraph key. Glossaries are public pages. It stores *which channel
+uses which glossary*, plus the text of the last 300 posts per channel so it can re-edit them
+(Telegram's edit methods need the full text). That text is deleted when the bot is removed from
+the channel.
 
 To move a channel to another glossary, connect the other glossary. The bot then offers to move
 the channels you connected before ("Move it here"). Adding the bot to the channel again does

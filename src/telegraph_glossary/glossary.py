@@ -16,10 +16,27 @@ from .markdown import markdown_to_nodes, nodes_to_markdown
 
 API = "https://api.telegra.ph"
 ALIAS_SEP = " · "
+# https://telegra.ph/api: "content (Array of Node, up to 64 KB)". Assumed (not verified with a
+# real call) to measure the JSON-serialized `content` parameter in UTF-8 bytes, which is what
+# `to_json` produces and `_call` sends. Same constant and measure in web/core/glossary.js.
+PAGE_LIMIT_BYTES = 64 * 1024
 
 
 class TelegraphError(Exception):
     pass
+
+
+class GlossaryFullError(ValueError):
+    pass
+
+
+def to_json(value: Any) -> str:
+    """The exact text sent for a non-string API parameter (compact, like JS JSON.stringify)."""
+    return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+
+
+def content_bytes(nodes: list[Any]) -> int:
+    return len(to_json(nodes).encode("utf-8"))
 
 
 def page_url(path: str) -> str:
@@ -85,6 +102,24 @@ def build_index(terms: list[Entry]) -> list[Any]:
     return nodes
 
 
+def projected_path(term: str) -> str:
+    """Stand-in for the path Telegraph will give a new page, used only to size the index before
+    the page exists. Assumes Telegraph's observed form: the title with spaces as "-", then "-MM-DD"
+    and a "-N" suffix on collisions (here the longest date and a 3-digit suffix)."""
+    return re.sub(r"\s+", "-", term) + "-12-31-999"
+
+
+def check_index_fits(terms: list[Entry]) -> None:
+    """Raise before any page is written if the index that `terms` builds is over Telegraph's limit.
+    Otherwise a new term page is created and then orphaned when the index write is rejected."""
+    size = content_bytes(build_index(terms))
+    if size > PAGE_LIMIT_BYTES:
+        raise GlossaryFullError(
+            f"The glossary is full: Telegraph limits a page to 64 KB, and the index would be {size / 1024:.1f} KB. "
+            "Remove terms or shorten aliases first."
+        )
+
+
 def clean_aliases(aliases: list[str], term: str) -> list[str]:
     seen = {term.strip().lower()}
     out = []
@@ -111,7 +146,7 @@ class Glossary:
         data = {}
         for k, v in {**({"access_token": self.token} if auth else {}), **(params or {})}.items():
             if v is not None:
-                data[k] = v if isinstance(v, str) else json.dumps(v, ensure_ascii=False)
+                data[k] = v if isinstance(v, str) else to_json(v)
         r = self.http.post(f"{API}/{method}", data=data).json()
         if not r.get("ok"):
             raise TelegraphError(r.get("error") or f"Telegraph {method} failed")
@@ -199,6 +234,8 @@ class Glossary:
         content = markdown_to_nodes(definition)
         if not content:
             raise ValueError("empty definition")
+        planned = Entry(term, existing.path if existing else projected_path(term), aliases)
+        check_index_fits([t for t in self.terms if t is not existing] + [planned])
         if existing:
             path = existing.path
             self._call("editPage", {"path": path, "title": term, **self._meta(), "content": content})
@@ -212,11 +249,16 @@ class Glossary:
     def save_terms(self, items: list[dict[str, Any]]) -> list[dict[str, Any]]:
         """Add or update many terms with one index write. Each item: term, definition, aliases?.
         An existing term (by name or alias) is updated. Items that fail validation are reported and
-        skipped; the rest are saved."""
+        skipped; the rest are saved. A later item for the same term replaces an earlier one (last
+        write wins), so each page is written once and listed once.
+
+        Every item is validated and the resulting index is sized before any page is written: if it
+        would not fit, GlossaryFullError is raised and nothing changes."""
         self.refresh()
-        taken = {k: t for t in self.terms for k in [t.term.lower(), *(a.lower() for a in t.aliases)]}
+        # name/alias (lowercase) -> its index entry, or the planned entry that replaces it
+        taken: dict[str, Entry] = {k: t for t in self.terms for k in [t.term.lower(), *(a.lower() for a in t.aliases)]}
         results: list[dict[str, Any]] = []
-        saved: list[Entry] = []
+        plans: list[dict[str, Any]] = []  # in item order; a replaced plan is removed
         for item in items:
             term = re.sub(r"\s+", " ", str(item.get("term") or "")).strip()
             try:
@@ -235,18 +277,43 @@ class Glossary:
                 clash = next((taken[k.lower()] for k in aliases if k.lower() in taken and taken[k.lower()] is not existing), None)
                 if clash:
                     raise ValueError(f'"{clash.term}" already uses one of these aliases')
-                if existing:
-                    path = existing.path
-                    self._call("editPage", {"path": path, "title": term, **self._meta(), "content": content})
-                else:
-                    path = self._call("createPage", {"title": term, **self._meta(), "content": content})["path"]
-                entry = Entry(term, path, aliases)
-                for k in [term, *aliases]:
-                    taken[k.lower()] = entry
-                saved.append(entry)
-                results.append({"term": term, "status": "updated" if existing else "added", "url": entry.url})
-            except (ValueError, TelegraphError) as e:
+            except ValueError as e:
                 results.append({"term": term, "status": "error", "error": str(e)})
+                continue
+            prev = next((p for p in plans if p["entry"] is existing), None)
+            if prev:
+                plans.remove(prev)
+            original = prev["original"] if prev else existing  # the index entry this updates, if any
+            entry = Entry(term, original.path if original else "", aliases)  # a new page's path is set once it exists
+            for k in [k for k, v in taken.items() if v is existing]:  # release the replaced entry's names
+                del taken[k]
+            for k in [term, *aliases]:
+                taken[k.lower()] = entry
+            plans.append({"entry": entry, "content": content, "original": original, "positions": (prev["positions"] if prev else []) + [len(results)]})
+            results.append({})  # filled in once the page is written
+        if not plans:
+            return results
+        replaced = {p["original"].path for p in plans if p["original"]}
+        check_index_fits(
+            [t for t in self.terms if t.path not in replaced]
+            + [p["entry"] if p["original"] else Entry(p["entry"].term, projected_path(p["entry"].term), p["entry"].aliases) for p in plans]
+        )
+        saved: list[Entry] = []
+        for p in plans:
+            entry = p["entry"]
+            try:
+                if p["original"]:
+                    self._call("editPage", {"path": entry.path, "title": entry.term, **self._meta(), "content": p["content"]})
+                else:
+                    entry.path = self._call("createPage", {"title": entry.term, **self._meta(), "content": p["content"]})["path"]
+                saved.append(entry)
+                result = {"term": entry.term, "status": "updated" if p["original"] else "added", "url": entry.url}
+            except TelegraphError as e:
+                result = {"term": entry.term, "status": "error", "error": str(e)}
+            *earlier, last = p["positions"]
+            results[last] = result
+            for pos in earlier:
+                results[pos] = {**result, "note": "replaced by a later item for the same term"}
         if saved:
             paths = {e.path for e in saved}
             self.update_index(lambda terms: [t for t in terms if t.path not in paths] + saved)
@@ -275,12 +342,13 @@ class Glossary:
         return out
 
     def update_index(self, apply, attempts: int = 4) -> None:
-        """Change the index without losing a concurrent edit (web app, another agent).
+        """Change the index while others may edit it too (web app, another agent).
 
         Telegraph has no compare-and-swap: two writers that read the same index both write, and
         the later write drops the earlier change. So write, wait for writes already in flight to
         land, re-read, and re-apply the change on top if it was dropped. `apply` must be
-        idempotent (replace by path, filter by path), so re-applying never duplicates."""
+        idempotent (replace by path, filter by path), so re-applying never duplicates. A write that
+        lands later than settle_s can still drop a change: this narrows the window, it can't close it."""
 
         def sig(terms: list[Entry]) -> list:
             return sorted([t.path, t.term, t.aliases] for t in terms)
@@ -304,8 +372,11 @@ class Glossary:
         entry = self.find(term)
         if not entry:
             return False
-        # Telegraph pages cannot be deleted: blank the page and drop it from the index.
-        self._call("editPage", {"path": entry.path, "title": entry.term, **self._meta(), "content": [{"tag": "p", "children": ["—"]}]})
+        # Telegraph pages cannot be deleted: drop it from the index, then blank the page. Index
+        # first, so a failed index write (network, concurrent edit) leaves the term intact. If the
+        # blanking fails after that, an unlisted page with the old definition is left: harmless,
+        # since the index no longer lists or links it.
         self.update_index(lambda terms: [t for t in terms if t.path != entry.path])
+        self._call("editPage", {"path": entry.path, "title": entry.term, **self._meta(), "content": [{"tag": "p", "children": ["—"]}]})
         self._changed()
         return True

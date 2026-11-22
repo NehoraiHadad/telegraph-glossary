@@ -40,10 +40,13 @@ that doubles as the data store:
   For that reason terms and aliases cannot contain `,` or `·`.
 * Any other paragraph is ignored.
 
-Writers always re-read the index right before writing (read-modify-write), so the web
-app, the CLI and AI agents can safely edit the same glossary.
+Writers re-read the index right before writing, then re-read after a short wait and re-apply
+their change if a concurrent writer dropped it. So the web app, the CLI and AI agents can edit
+the same glossary at the same time. Telegraph has no compare-and-swap, though, so a write
+slower than that wait can still drop a change.
 
 Telegraph limits a page to 64 KB of content, so one index holds several hundred terms (fewer with long Hebrew names, whose URLs are percent-encoded).
+Writers size the new index (its content as sent, JSON in UTF-8 bytes) before writing any term page, and refuse a change that would not fit.
 
 ## Linking rules (`spec/linker-cases.json`)
 
