@@ -11,6 +11,26 @@ import { markdownToNodes, nodesToMarkdown } from "./markdown.js";
 
 export const APP_URL = "https://nehoraihadad.github.io/telegraph-glossary/";
 const ALIAS_SEP = " · ";
+// https://telegra.ph/api: "content (Array of Node, up to 64 KB)". Assumed (not verified with a
+// real call) to measure the JSON-serialized `content` parameter in UTF-8 bytes, which is what
+// call() in telegraph.js sends (JSON.stringify). Same constant and measure in glossary.py.
+export const PAGE_LIMIT_BYTES = 64 * 1024;
+
+export const contentBytes = (nodes) => new TextEncoder().encode(JSON.stringify(nodes)).length;
+
+// Stand-in for the path Telegraph will give a new page, used only to size the index before the
+// page exists. Assumes Telegraph's observed form: the title with spaces as "-", then "-MM-DD" and
+// a "-N" suffix on collisions (here the longest date and a 3-digit suffix).
+export const projectedPath = (term) => term.replace(/\s+/g, "-") + "-12-31-999";
+
+/** Throw before any page is written if the index that `terms` builds is over Telegraph's limit.
+ *  Otherwise a new term page is created and then orphaned when the index write is rejected. */
+export function checkIndexFits(terms) {
+  const size = contentBytes(buildIndex(terms));
+  if (size > PAGE_LIMIT_BYTES) {
+    throw new Error(`The glossary is full: Telegraph limits a page to 64 KB, and the index would be ${(size / 1024).toFixed(1)} KB. Remove terms or shorten aliases first.`);
+  }
+}
 
 export function parseIndex(nodes) {
   const terms = [];
@@ -139,6 +159,7 @@ export class Glossary {
     if (clash && clash !== existing) throw new Error(`"${clash.term}" already exists`);
     const content = markdownToNodes(definition);
     if (!content.length) throw new Error("empty definition");
+    checkIndexFits([...this.terms.filter((t) => t !== existing), { term, aliases, path: existing ? existing.path : projectedPath(term) }]);
     let path;
     if (existing) {
       path = existing.path;
@@ -151,11 +172,12 @@ export class Glossary {
   }
 
   /**
-   * Change the index without losing someone else's concurrent edit (another tab, an AI agent).
+   * Change the index while others may edit it too (another tab, an AI agent).
    * Telegraph has no compare-and-swap: two writers that read the same index both write, and the
    * later write drops the earlier change. So each writer writes, waits for writes already in
    * flight to land, re-reads, and re-applies its change on top if it was dropped. `apply` must be
-   * idempotent (replace by path, filter by path), so re-applying never duplicates.
+   * idempotent (replace by path, filter by path), so re-applying never duplicates. A write that
+   * lands later than settleMs can still drop a change: this narrows the window, it can't close it.
    */
   async updateIndex(apply, attempts = 4) {
     const sig = (terms) => JSON.stringify(terms.map((t) => [t.path, t.term, t.aliases]).sort());
@@ -175,9 +197,16 @@ export class Glossary {
     await this.refresh();
     const t = this.find(term);
     if (!t) return false;
-    // Telegraph pages cannot be deleted; blank it and drop it from the index.
-    await this.api("editPage", { path: t.path, title: t.term, ...this.pageMeta(), content: [{ tag: "p", children: ["—"] }] });
+    // Telegraph pages cannot be deleted: drop it from the index, then blank the page. Index first,
+    // so a failed index write (network, concurrent edit) leaves the term intact. If the blanking
+    // fails, the term is listed again, so the removal can simply be retried.
     await this.updateIndex((terms) => terms.filter((x) => x.path !== t.path));
+    try {
+      await this.api("editPage", { path: t.path, title: t.term, ...this.pageMeta(), content: [{ tag: "p", children: ["—"] }] });
+    } catch (e) {
+      await this.updateIndex((terms) => [...terms.filter((x) => x.path !== t.path), t]);
+      throw e;
+    }
     return true;
   }
 

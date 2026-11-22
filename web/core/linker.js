@@ -33,18 +33,23 @@ export function findTerms(text, terms, options = {}) {
   const mode = options.mode || "first";
   const exclude = new Set((options.exclude || []).map((t) => t.toLowerCase()));
 
-  const formToTerm = new Map();
+  // Registration order is kept (Map order): the first registered form wins.
+  const exact = new Map();
   for (const t of terms) {
     for (const form of [t.term, ...(t.aliases || [])]) {
       const f = form.trim();
-      if (f && !formToTerm.has(f.toLowerCase())) formToTerm.set(f.toLowerCase(), t);
+      if (f && !exact.has(f)) exact.set(f, t);
     }
   }
-  if (formToTerm.size === 0) return { segments: text ? [{ text }] : [], found: [] };
+  if (exact.size === 0) return { segments: text ? [{ text }] : [], found: [] };
 
-  const forms = [...formToTerm.keys()].sort((a, b) => b.length - a.length || (a < b ? -1 : 1));
+  // Case-insensitivity is the regex's own (Unicode simple case folding, /iu). Each form is
+  // its own capture group, so the matched form's term is found by which group matched, never
+  // by re-deriving a case-folded key from the text. Longest form first; the sort is stable, so
+  // among forms that fold equal the first registered one is tried first (linker.py does the same).
+  const forms = [...exact.keys()].sort((a, b) => b.length - a.length);
   const re = new RegExp(
-    `(?<!${WORD})(${HEB_PREFIX})(${forms.map(escapeRegex).join("|")})(?!${WORD})`,
+    `(?<!${WORD})(${HEB_PREFIX})(${forms.map((f) => `(${escapeRegex(f)})`).join("|")})(?!${WORD})`,
     "giu",
   );
 
@@ -64,7 +69,7 @@ export function findTerms(text, terms, options = {}) {
     let m;
     while ((m = re.exec(chunk)) !== null) {
       const [whole, prefix, form] = m;
-      const t = formToTerm.get(form.toLowerCase());
+      const t = exact.get(forms[m.findIndex((g, i) => i >= 3 && g !== undefined) - 3]);
       push(chunk.slice(pos, m.index) + prefix);
       const key = t.term.toLowerCase();
       const excluded = exclude.has(key);

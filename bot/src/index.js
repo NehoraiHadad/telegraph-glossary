@@ -114,7 +114,8 @@ export default {
     if (url.pathname === "/telegram" && request.method === "POST") {
       if (request.headers.get("x-telegram-bot-api-secret-token") !== (await webhookSecret(env))) return new Response("forbidden", { status: 403 });
       const update = await request.json();
-      ctx.waitUntil(b.handleUpdate(update).catch((e) => console.error("update", e)));
+      // Answer only after the work is done: Telegram retries an update only when the response is not 2xx.
+      try { await b.handleUpdate(update); } catch (e) { console.error("update", e); return new Response("error", { status: 500 }); }
       return new Response("ok");
     }
 

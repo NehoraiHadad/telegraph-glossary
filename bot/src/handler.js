@@ -1,8 +1,10 @@
 // Channel auto-link bot. Platform independent: all I/O is injected, so the same
 // logic runs in the Cloudflare Worker (index.js) and in tests.
 //
-// The bot never holds anyone's Telegraph key. Glossaries are public pages, so all
-// it needs is "channel X uses the glossary whose index page is P".
+// The bot never holds anyone's Telegraph key. Glossaries are public pages, so it
+// stores which channel uses which glossary, plus the text of each channel's last
+// MAX_POSTS posts (Telegram's edit methods need the full text). Removing the bot from
+// a channel deletes that channel's binding and post texts.
 //
 // KV layout (values are JSON):
 //   code:<code>        -> index path          (one-time connect codes, 1 day)
@@ -11,6 +13,7 @@
 //   chan:<chatId>      -> {path, owner, title, mode}
 //   gchans:<path>      -> [chatId]            (channels using a glossary)
 //   gver:<path>        -> version hash of the glossary last applied
+//   cron:next          -> gchans key the next cron run starts at (only when a run stops early)
 //   posts:<chatId>     -> [{id, v}]           (recent posts + glossary version applied)
 //   post:<chatId>:<id> -> {text, entities, caption, preview, paths}
 
@@ -19,8 +22,12 @@ import { parseIndex } from "../../web/core/glossary.js";
 import { pathFromUrl } from "../../web/core/telegraph.js";
 
 const MAX_POSTS = 300; // remembered per channel
-const MAX_EDITS_PER_RUN = 30; // stay well under platform subrequest limits
+// External requests (Telegraph fetches, Telegram edits) per run. The Workers free plan allows 50
+// per invocation (developers.cloudflare.com/workers/platform/limits/#subrequests); leave headroom.
+const MAX_REQUESTS_PER_RUN = 45;
 const CODE_TTL = 24 * 3600;
+// Telegram edit failures that a retry cannot fix.
+const PERMANENT_EDIT_ERROR = /rights|can't be edited|not enough|MESSAGE_ID_INVALID|message to edit not found/i;
 
 const T = {
   he: {
@@ -128,7 +135,8 @@ export function createBot(deps) {
     return { code, start_url: `https://t.me/${bot}?start=${code}`, bot_username: bot };
   }
 
-  async function bindChannel(chat, owner, path) {
+  /** `canEdit: false`: bound, but not usable yet, so the owner gets the missing-right warning instead of "connected". */
+  async function bindChannel(chat, owner, path, { canEdit = true } = {}) {
     const prev = await kv.get(`chan:${chat.id}`);
     if (prev && prev.path !== path) {
       await unlistChannel(prev.path, chat.id);
@@ -140,7 +148,10 @@ export function createBot(deps) {
     const list = (await kv.get(`gchans:${path}`)) || [];
     if (!list.includes(String(chat.id))) await kv.put(`gchans:${path}`, [...list, String(chat.id)]);
     const g = await glossary(path);
-    if (owner) await say(owner.id, (await trU(owner)).chanOk(chat.title, g.title));
+    if (owner) {
+      const s = await trU(owner);
+      await say(owner.id, canEdit ? s.chanOk(chat.title, g.title) : s.noEditRight(chat.title));
+    }
   }
 
   /**
@@ -174,9 +185,17 @@ export function createBot(deps) {
   async function unbindChannel(chat, by) {
     const b = await kv.get(`chan:${chat.id}`);
     if (!b) return;
+    // State goes first and the binding last, so a failure part-way is finished by Telegram's retry
+    // (the webhook answers 500), which finds the binding still there. Messages go out at the end.
     await unlistChannel(b.path, chat.id);
-    await kv.del(`chan:${chat.id}`);
     if (b.owner) await setOwned(b.owner, chat.id, false);
+    // The bot no longer belongs to the channel, so it must not keep the channel's post texts.
+    // One delete per remembered post (up to MAX_POSTS): the KV free plan allows 1,000 deletes a
+    // day (developers.cloudflare.com/kv/platform/pricing/), which is enough because removal is rare.
+    // A channel that only moves to another glossary never comes here: its posts stay valid.
+    for (const p of (await kv.get(`posts:${chat.id}`)) || []) await kv.del(`post:${chat.id}:${p.id}`);
+    await kv.del(`posts:${chat.id}`);
+    await kv.del(`chan:${chat.id}`);
     if (b.owner) await say(b.owner, (await trU(by)).removed(chat.title));
   }
 
@@ -240,14 +259,15 @@ export function createBot(deps) {
    * Anyone may trigger this (/api/changed carries no authority), so it only acts on public state
    * and writes to KV only what actually changed: an unchanged glossary or a glossary without
    * channels costs reads only.
+   * `budget.requests` counts external requests, failed ones included: the Telegraph fetch and
+   * every Telegram attempt. An unexpected (likely transient) error ends the run.
    */
-  async function resync(path, budget = { edits: MAX_EDITS_PER_RUN }) {
+  async function resync(path, budget = { requests: MAX_REQUESTS_PER_RUN }) {
     const chats = (await kv.get(`gchans:${path}`)) || [];
-    if (!chats.length) return 0;
+    if (!chats.length || budget.requests <= 0) return 0;
+    budget.requests--;
     const g = await glossary(path, true);
     if ((await kv.get(`gver:${path}`)) === g.version) return 0;
-    // The budget counts Telegram attempts, failed ones included: it bounds the run's subrequests.
-    // An unexpected (likely transient) error ends the run; the rest waits for the next one.
     let done = 0, complete = true, stop = false;
     for (const chatId of chats) {
       const binding = await kv.get(`chan:${chatId}`);
@@ -255,10 +275,10 @@ export function createBot(deps) {
       let dirty = false;
       for (const p of [...list].reverse()) {
         if (p.v === g.version) continue;
-        if (budget.edits <= 0) { complete = false; stop = true; break; }
+        if (budget.requests <= 0) { complete = false; stop = true; break; }
         const rec = await kv.get(`post:${chatId}:${p.id}`);
         if (rec) {
-          budget.edits--;
+          budget.requests--;
           try { await apply(chatId, p.id, rec, g, binding?.mode, rec.applied || rec.entities); done++; await kv.put(`post:${chatId}:${p.id}`, rec); }
           catch (e) { if (!/not found|can't be edited|MESSAGE_ID_INVALID/i.test(e.message)) { complete = false; stop = true; break; } }
         }
@@ -273,21 +293,41 @@ export function createBot(deps) {
   }
 
   // ------------------------------------------------------------ updates
+  /**
+   * A channel post the bot can never edit (missing right, post owned by another bot, post gone).
+   * handlePost already told the owner where that helps. Throwing would make the webhook answer 500
+   * and Telegram redeliver the same update that fails the same way, so it is swallowed here.
+   */
+  async function channelPost(msg) {
+    try { return await handlePost(msg.chat.id, msg); }
+    catch (e) { if (!PERMANENT_EDIT_ERROR.test(e.message)) throw e; }
+  }
+
+  /**
+   * Throws only on errors a retry can fix (Telegraph or Telegram unreachable, KV failure), so the
+   * webhook can answer 500 and Telegram redelivers. A redelivered update is harmless: an edit that
+   * changes nothing is "not modified", and remember() replaces a post's record by id.
+   */
   async function handleUpdate(u) {
-    if (u.channel_post) return handlePost(u.channel_post.chat.id, u.channel_post);
-    if (u.edited_channel_post) return handlePost(u.edited_channel_post.chat.id, u.edited_channel_post);
+    if (u.channel_post) return channelPost(u.channel_post);
+    if (u.edited_channel_post) return channelPost(u.edited_channel_post);
 
     if (u.my_chat_member) {
       const { chat, from, new_chat_member: m } = u.my_chat_member;
       if (chat.type !== "channel") return;
       if (["left", "kicked"].includes(m.status)) return unbindChannel(chat, from);
       if (m.status !== "administrator") return;
-      if (m.can_edit_messages === false) await say(from.id, (await trU(from)).noEditRight(chat.title));
+      // Bind anyway: Telegram promises no update when rights change, so the channel must work as
+      // soon as the right is granted. Until then only the warning is true, not "connected".
+      // Messages are sent after the state is saved, so a retried update doesn't repeat them.
+      const canEdit = m.can_edit_messages !== false;
       const path = await kv.get(`user:${from.id}`);
-      if (path) return bindChannel(chat, from, path);
+      if (path) return bindChannel(chat, from, path, { canEdit });
       const pending = (await kv.get(`pending:${from.id}`)) || [];
       await kv.put(`pending:${from.id}`, [...pending.filter((c) => c.id !== chat.id), { id: chat.id, title: chat.title }], { ttl: 7 * 24 * 3600 });
-      return say(from.id, (await trU(from)).chanNoGlossary(chat.title));
+      const sf = await trU(from);
+      if (!canEdit) await say(from.id, sf.noEditRight(chat.title));
+      return say(from.id, sf.chanNoGlossary(chat.title));
     }
 
     if (u.callback_query) {
@@ -326,15 +366,16 @@ export function createBot(deps) {
       const entry = await kv.get(`code:${arg}`);
       if (!entry) return say(user.id, s.badCode);
       const { path, lang } = typeof entry === "string" ? { path: entry } : entry; // codes made before lang was stored
-      await kv.del(`code:${arg}`);
+      // The code is used up only at the end, so a retried update (webhook answered 500) still works.
+      const g = await glossary(path);
       await kv.put(`user:${user.id}`, path);
       if (lang && !(await kv.get(`lang:${user.id}`))) await kv.put(`lang:${user.id}`, lang);
-      const g = await glossary(path);
       const sl = await trU(user);
       await say(user.id, sl.linked(g.title), { reply_markup: { inline_keyboard: [[{ text: sl.addBtn, url: await addToChannelUrl() }]] } });
       for (const c of (await kv.get(`pending:${user.id}`)) || []) await bindChannel(c, user, path);
       await kv.del(`pending:${user.id}`);
-      return offerMoves(user, path);
+      await offerMoves(user, path);
+      return kv.del(`code:${arg}`);
     }
     if (cmd === "/language") return say(user.id, CHOOSE_LANG, { reply_markup: LANG_BUTTONS });
     if (cmd === "/status") {
@@ -365,11 +406,26 @@ export function createBot(deps) {
     return Promise.all(ids.map(async (id) => ({ id, title: (await kv.get(`chan:${id}`))?.title || id })));
   }
 
+  /**
+   * Catches glossary edits made elsewhere. One run may not reach every glossary (each check is a
+   * Telegraph fetch, and a changed glossary spends requests on edits), so the next run starts
+   * right after the last glossary this one reached (`cron:next`). That key is written only when a
+   * run stops early, at most once per run.
+   */
   async function cron() {
-    let budget = { edits: MAX_EDITS_PER_RUN };
-    for (const key of await kv.list("gchans:")) {
-      if (budget.edits <= 0) break;
+    const budget = { requests: MAX_REQUESTS_PER_RUN };
+    const keys = await kv.list("gchans:"); // sorted
+    if (!keys.length) return;
+    const saved = await kv.get("cron:next");
+    const start = saved ? Math.max(0, keys.findIndex((k) => k >= saved)) : 0; // a removed key: the one after it
+    let i = 0;
+    for (; i < keys.length && budget.requests > 0; i++) {
+      const key = keys[(start + i) % keys.length];
       try { await resync(key.slice("gchans:".length), budget); } catch (e) { console.error("resync", key, e); }
+    }
+    if (i < keys.length) {
+      const next = keys[(start + i) % keys.length];
+      if (next !== saved) await kv.put("cron:next", next);
     }
   }
 

@@ -6,8 +6,10 @@ link-preview setting stay as they were. When the glossary changes, the bot re-ap
 the posts it remembers (the last 300 per channel). Older posts can be forwarded to the bot, and it
 updates the originals.
 
-The bot never sees anyone's Telegraph key. Glossaries are public pages, so all it stores is
-*which channel uses which glossary*.
+The bot never sees anyone's Telegraph key. Glossaries are public pages. It stores *which channel
+uses which glossary*, plus the text of the last 300 posts per channel so it can re-edit them
+(Telegram's edit methods need the full text). That text is deleted when the bot is removed from
+the channel.
 
 To move a channel to another glossary, connect the other glossary. The bot then offers to move
 the channels you connected before ("Move it here"). Adding the bot to the channel again does
@@ -67,7 +69,8 @@ Only `BOT_TOKEN` is needed: the webhook secret is derived from it.
   scheduler, for example), and Telegram lets only that bot edit the post.
 * Bots can't read channel history, so posts from before the bot joined are updated only when forwarded.
 * Free plan: about 1,000 KV writes a day (about 2 per new post) and 50 outgoing requests per
-  invocation, so a glossary change updates up to 30 posts per run and the rest on the next run.
+  invocation. So a glossary change updates about 40 posts per run and the rest on the next run,
+  and each 15-minute run checks up to 45 glossaries for edits made elsewhere; the next run goes on from where it stopped.
   The $5 Workers plan lifts both limits.
 
 ## Tests

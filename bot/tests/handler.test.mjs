@@ -13,6 +13,7 @@ function setup() {
   };
   const calls = [];
   let fail = false;
+  const fetched = [];
   let terms = [{ term: "API", aliases: [], path: "API-1" }, { term: "פייתון", aliases: ["Python"], path: "Py-1" }];
   const bot = createBot({
     kv,
@@ -22,9 +23,9 @@ function setup() {
       if (fail && method.startsWith("edit")) throw new Error("Bad Gateway");
       return { message_id: 1 };
     },
-    getPage: async () => ({ title: "My glossary", content: buildIndex(terms, "My glossary") }),
+    getPage: async (path) => { fetched.push(path); return { title: "My glossary", content: buildIndex(terms, "My glossary") }; },
   });
-  return { bot, calls, kv, store, setTerms: (t) => { terms = t; }, failEdits: (on) => { fail = on; } };
+  return { bot, calls, kv, store, fetched, setTerms: (t) => { terms = t; }, failEdits: (on) => { fail = on; } };
 }
 
 const user = { id: 7, language_code: "en", first_name: "Dana" };
@@ -292,7 +293,7 @@ test("resync writes KV only on real change (anyone can trigger it through /api/c
   assert.deepEqual(writes.sort(), ["gver:My-glossary-11-21", "post:-1001:70", "posts:-1001"]);
 });
 
-test("resync budget bounds Telegram attempts, failed ones included", async () => {
+test("resync budget bounds external requests, failed ones included", async () => {
   const t = setup();
   await connectAndAdd(t);
   const other = { id: -1002, type: "channel", title: "Second" };
@@ -305,13 +306,125 @@ test("resync budget bounds Telegram attempts, failed ones included", async () =>
   t.setTerms([{ term: "API", aliases: [], path: "API-2" }]);
   t.calls.length = 0;
   t.failEdits(true); // transient failure: one attempt, then the run stops (other channel included)
-  await t.bot.resync("My-glossary-11-21", { edits: 3 });
+  await t.bot.resync("My-glossary-11-21", { requests: 4 }); // 1 Telegraph fetch + 3 Telegram attempts
   assert.equal(edits(t.calls).length, 1);
   t.failEdits(false);
   t.calls.length = 0;
-  await t.bot.resync("My-glossary-11-21", { edits: 3 });
+  await t.bot.resync("My-glossary-11-21", { requests: 4 });
   assert.equal(edits(t.calls).length, 3);
   t.calls.length = 0;
   assert.equal(await t.bot.resync("My-glossary-11-21"), 7); // the rest, then done
   assert.equal(await t.bot.resync("My-glossary-11-21"), 0);
+});
+
+test("cron stays within the request budget and reaches every glossary in turn, even with busy ones", async () => {
+  const t = setup();
+  const paths = Array.from({ length: 100 }, (_, i) => `G-${String(i).padStart(3, "0")}`);
+  for (const [i, p] of paths.entries()) {
+    const chat = String(-2000 - i);
+    await t.kv.put(`gchans:${p}`, [chat]);
+    if (i % 45) continue; // G-000, G-045, G-090: 300 posts each waiting for the new glossary
+    await t.kv.put(`chan:${chat}`, { path: p, mode: "first" });
+    await t.kv.put(`posts:${chat}`, Array.from({ length: 300 }, (_, n) => ({ id: n, v: "old" })));
+    for (let n = 0; n < 300; n++) await t.kv.put(`post:${chat}:${n}`, { text: "API", entities: [], paths: [] });
+  }
+  const seen = new Set();
+  let cursorWrites = 0;
+  const put = t.kv.put;
+  t.kv.put = async (k, v) => { cursorWrites += k === "cron:next"; return put(k, v); };
+  for (let run = 0; run < 5; run++) {
+    t.fetched.length = 0;
+    t.calls.length = 0;
+    const before = cursorWrites;
+    await t.bot.cron();
+    assert.ok(t.fetched.length + t.calls.length <= 45, `run ${run}: ${t.fetched.length + t.calls.length} requests`);
+    assert.ok(cursorWrites - before <= 1);
+    t.fetched.forEach((p) => seen.add(p));
+  }
+  assert.equal(seen.size, paths.length);
+});
+
+test("cron with few glossaries checks them all and stores no cursor", async () => {
+  const t = setup();
+  await connectAndAdd(t);
+  await t.bot.cron();
+  assert.equal(await t.kv.get("cron:next"), null);
+});
+
+test("a retried /start or channel removal finishes the job", async () => {
+  const t = setup();
+  const { code } = await t.bot.connectCode("My-glossary-11-21");
+  const start = { message: { chat: { id: 7, type: "private" }, from: user, text: `/start ${code}` } };
+  const del = t.kv.del;
+  t.kv.del = async () => { throw new Error("KV unavailable"); };
+  await assert.rejects(t.bot.handleUpdate(start));
+  t.kv.del = del;
+  t.calls.length = 0;
+  await t.bot.handleUpdate(start); // Telegram's retry: the code still works
+  assert.match(t.calls[0].params.text, /My glossary/);
+  await t.bot.handleUpdate({ my_chat_member: { chat: channel, from: user, new_chat_member: { status: "administrator", can_edit_messages: true } } });
+  await t.bot.handleUpdate({ channel_post: { chat: channel, message_id: 80, text: "API" } });
+  const leave = { my_chat_member: { chat: channel, from: user, new_chat_member: { status: "left" } } };
+  let n = 0;
+  t.kv.del = async (k) => { if (k.startsWith("posts:") && n++ === 0) throw new Error("KV unavailable"); return del(k); };
+  await assert.rejects(t.bot.handleUpdate(leave));
+  await t.bot.handleUpdate(leave); // the retry finds the binding and finishes
+  for (const k of ["chan:-1001", "posts:-1001", "post:-1001:80", "uchans:7"]) assert.equal(await t.kv.get(k), null, k);
+});
+
+test("removing the bot deletes the channel's remembered post texts; moving it keeps them", async () => {
+  const t = setup();
+  await connectAndAdd(t);
+  for (const id of [50, 51]) await t.bot.handleUpdate({ channel_post: { chat: channel, message_id: id, text: "Hello API" } });
+  assert.equal((await t.kv.get("posts:-1001")).length, 2);
+  // moving to another glossary keeps the posts
+  const { code } = await t.bot.connectCode("Other-glossary-11-22");
+  await t.bot.handleUpdate({ message: { chat: { id: 7, type: "private" }, from: user, text: `/start ${code}` } });
+  await t.bot.handleUpdate({ callback_query: { id: "q", from: user, data: "move:-1001" } });
+  assert.equal((await t.kv.get("chan:-1001")).path, "Other-glossary-11-22");
+  assert.equal((await t.kv.get("posts:-1001")).length, 2);
+  assert.ok(await t.kv.get("post:-1001:50"));
+  // removal deletes them
+  await t.bot.handleUpdate({ my_chat_member: { chat: channel, from: user, new_chat_member: { status: "left" } } });
+  assert.deepEqual([...t.store.keys()].filter((k) => k.includes("-1001")), []);
+});
+
+test("bot added without the edit right: warns, binds, but does not claim the channel works", async () => {
+  const t = setup();
+  const { code } = await t.bot.connectCode("My-glossary-11-21");
+  await t.bot.handleUpdate({ message: { chat: { id: 7, type: "private" }, from: user, text: `/start ${code}` } });
+  t.calls.length = 0;
+  await t.bot.handleUpdate({ my_chat_member: { chat: channel, from: user, new_chat_member: { status: "administrator", can_edit_messages: false } } });
+  assert.equal((await t.kv.get("chan:-1001")).path, "My-glossary-11-21");
+  const dms = t.calls.filter((c) => c.method === "sendMessage").map((c) => c.params.text);
+  assert.equal(dms.length, 1);
+  assert.match(dms[0], /can't edit messages/);
+});
+
+test("the same channel_post delivered twice (webhook retry) edits once and is remembered once", async () => {
+  const t = setup();
+  await connectAndAdd(t);
+  t.calls.length = 0;
+  const post = { chat: channel, message_id: 50, text: "Hello API" };
+  await t.bot.handleUpdate({ channel_post: post });
+  assert.equal(edits(t.calls).length, 1);
+  // Telegram redelivers the original (no links in it): the edit repeats identically, Telegram says "not modified"
+  t.calls.length = 0;
+  await t.bot.handleUpdate({ channel_post: post });
+  const [e] = edits(t.calls);
+  assert.equal(links(e.params.entities).length, 1);
+  assert.equal((await t.kv.get("posts:-1001")).length, 1);
+});
+
+test("a post the bot can never edit does not fail the update (no endless webhook retries); transient errors do", async () => {
+  const t = setup();
+  await connectAndAdd(t);
+  const bad = createBot({
+    kv: t.kv, username: async () => "GlossBot",
+    tg: async (m) => { if (m.startsWith("edit")) throw new Error("Bad Request: not enough rights to edit the message"); return {}; },
+    getPage: async () => ({ title: "My glossary", content: buildIndex([{ term: "API", aliases: [], path: "API-1" }], "My glossary") }),
+  });
+  await bad.handleUpdate({ channel_post: { chat: channel, message_id: 60, text: "Hello API" } });
+  t.failEdits(true);
+  await assert.rejects(t.bot.handleUpdate({ channel_post: { chat: channel, message_id: 61, text: "Hello API" } }), /Bad Gateway/);
 });

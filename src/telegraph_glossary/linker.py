@@ -15,6 +15,29 @@ HEB_PREFIX = r"(?:[והבכלמש]{1,3}[-־]?)?"
 # Spans that must never be touched: URLs, @mentions, #hashtags.
 PROTECTED = re.compile(r"(?:https?://|www\.)\S+|[@#]\w+")
 
+# Characters whose Unicode *simple* case folding has no single-character casefold()/lower().
+_SIMPLE_FOLD_ONLY = {"\u1fd3": "\u0390", "\u1fe3": "\u03b0", "\ufb05": "\ufb06"}
+
+
+def fold_char(c: str) -> str:
+    """Unicode simple case folding of one character (the rule of JS ``/iu``).
+
+    Matching must not use ``re.IGNORECASE``: Python's engine also equates
+    dotless i (U+0131) with "i", which JS does not. Folding both text and forms with this
+    function (always one character in, one character out, so offsets are kept)
+    gives the same matches and the same lookup keys as ``linker.js``.
+    """
+    if c in _SIMPLE_FOLD_ONLY:
+        return _SIMPLE_FOLD_ONLY[c]
+    for folded in (c.casefold(), c.lower()):
+        if len(folded) == 1:
+            return folded
+    return c
+
+
+def fold(s: str) -> str:
+    return "".join(map(fold_char, s))
+
 
 @dataclass
 class Term:
@@ -53,19 +76,22 @@ def find_terms(
 ) -> tuple[list[Segment], list[str]]:
     """Split ``text`` into segments; return (segments, found canonical terms)."""
     excluded = {t.lower() for t in exclude}
-    form_to_term: dict[str, Term] = {}
+    # Longest form first; the sort is stable, so among forms that fold equal the first
+    # registered one wins (linker.js tries its alternatives in the same order).
+    exact: dict[str, Term] = {}
     for t in map(_as_term, terms):
         for form in [t.term, *t.aliases]:
             f = form.strip()
-            if f and f.lower() not in form_to_term:
-                form_to_term[f.lower()] = t
+            if f and f not in exact:
+                exact[f] = t
+    form_to_term: dict[str, Term] = {}
+    for f in sorted(exact, key=len, reverse=True):
+        form_to_term.setdefault(fold(f), exact[f])
     if not form_to_term:
         return ([Segment(text)] if text else []), []
 
-    forms = sorted(form_to_term, key=lambda f: (-len(f), f))
-    pattern = re.compile(
-        rf"(?<!\w)({HEB_PREFIX})({'|'.join(map(re.escape, forms))})(?!\w)", re.IGNORECASE
-    )
+    forms = list(form_to_term)
+    pattern = re.compile(rf"(?<!\w)({HEB_PREFIX})({'|'.join(map(re.escape, forms))})(?!\w)")
 
     segments: list[Segment] = []
     found: list[str] = []
@@ -81,10 +107,10 @@ def find_terms(
 
     def scan(chunk: str) -> None:
         pos = 0
-        for m in pattern.finditer(chunk):
-            prefix, form = m.group(1), m.group(2)
-            t = form_to_term[form.lower()]
-            push(chunk[pos : m.start()] + prefix)
+        for m in pattern.finditer(fold(chunk)):
+            t = form_to_term[m.group(2)]
+            push(chunk[pos : m.start()] + chunk[m.start(1) : m.end(1)])
+            form = chunk[m.start(2) : m.end(2)]
             key = t.term.lower()
             is_excluded = key in excluded
             linked = not is_excluded and (mode == "all" or key not in seen)
