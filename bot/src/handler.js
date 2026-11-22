@@ -10,7 +10,9 @@
 //   code:<code>        -> {path, lang, usedBy?} (one-time connect codes, 1 day; usedBy once used)
 //   user:<userId>      -> index path          (the glossary a person connected)
 //   pending:<userId>   -> [chat]              (channels added before /start)
-//   chan:<chatId>      -> {path, owner, title, mode, removing?}  (removing: the bot left, cleanup under way)
+//   chan:<chatId>      -> {path, owner, title, mode}  (deleted first when the bot leaves the channel)
+//   purge:<chatId>     -> {path, owner}       (the bot left; the channel's records are still being
+//                                              deleted. Removed once all are gone; the cron resumes it)
 //   gchans:<path>      -> [chatId]            (channels using a glossary)
 //   gver:<path>        -> version hash of the glossary last applied
 //   cron:next          -> gchans key the next cron run starts at (only when a run stops early)
@@ -25,6 +27,11 @@ const MAX_POSTS = 300; // remembered per channel
 // External requests (Telegraph fetches, Telegram edits) per run. The Workers free plan allows 50
 // per invocation (developers.cloudflare.com/workers/platform/limits/#subrequests); leave headroom.
 const MAX_REQUESTS_PER_RUN = 45;
+// KV operations a cron run may spend finishing removals. The KV free plan allows 1,000 per
+// invocation (developers.cloudflare.com/kv/platform/limits/); the rest is left to resync. One
+// removal costs at most MAX_POSTS + PURGE_FIXED_OPS, so a full one always fits.
+const MAX_PURGE_KV_OPS = 500;
+const PURGE_FIXED_OPS = 10; // purgeChannel without the per-post deletes (8), plus the cron's two reads
 const CODE_TTL = 24 * 3600;
 // Telegram edit failures that a retry cannot fix.
 const PERMANENT_EDIT_ERROR = /rights|can't be edited|not enough|MESSAGE_ID_INVALID|message to edit not found/i;
@@ -144,8 +151,9 @@ export function createBot(deps) {
    * missing-right warning instead of "connected".
    */
   async function bindChannel(chat, owner, path, { canEdit = true } = {}) {
-    let prev = await kv.get(`chan:${chat.id}`);
-    if (prev?.removing) { await purgeChannel(chat.id, prev); prev = null; } // re-added before a removal finished
+    const unfinished = await kv.get(`purge:${chat.id}`);
+    if (unfinished) await purgeChannel(chat.id, unfinished); // re-added before a removal finished
+    const prev = await kv.get(`chan:${chat.id}`);
     if (prev && prev.path !== path) {
       await unlistChannel(prev.path, chat.id);
       await kv.del(`gver:${path}`); // the next resync must also cover this channel's posts
@@ -178,7 +186,7 @@ export function createBot(deps) {
     const offers = [];
     let g;
     for (const id of (await kv.get(`uchans:${user.id}`)) || []) {
-      const b = await activeBinding(id);
+      const b = await bindingOf(id);
       if (!b || b.path === path) continue;
       g ||= await glossary(path);
       offers.push(notice(user.id, s.moveOffer(b.title, g.title), { reply_markup: { inline_keyboard: [[{ text: s.moveBtn, callback_data: `move:${id}` }]] } }));
@@ -192,37 +200,54 @@ export function createBot(deps) {
   }
 
   /**
-   * The bot left the channel. The binding is first marked `removing`: from then on no post of the
-   * channel is edited or stored (activeBinding is checked by handlePost, remember and resync), so the
-   * cleanup cannot race a post into an orphan record. The cleanup is idempotent and deletes the
-   * binding last, so a failure part-way is finished by Telegram's retry (the webhook answers 500),
-   * which finds the marked binding. The message goes out after everything is deleted.
+   * The bot left the channel. First `purge:<chat>` is written, so the removal can always be found
+   * and finished (Telegram's retry, the webhook having answered 500, or else the cron). Then
+   * purgeChannel deletes the binding, which is the mark every post writer checks after writing
+   * (stored()), and only then reads the post list. The message goes out after everything is deleted.
    */
   async function unbindChannel(chat, by) {
-    let b = await kv.get(`chan:${chat.id}`);
-    if (!b) return;
-    if (!b.removing) { b = { ...b, removing: true }; await kv.put(`chan:${chat.id}`, b); }
-    await purgeChannel(chat.id, b);
-    if (b.owner) await say(b.owner, (await trU(by)).removed(chat.title));
+    const b = await kv.get(`chan:${chat.id}`);
+    let p;
+    if (b) await kv.put(`purge:${chat.id}`, (p = { path: b.path, owner: b.owner ?? null }));
+    else if (!(p = await kv.get(`purge:${chat.id}`))) return;
+    await purgeChannel(chat.id, p);
+    if (p.owner) await say(p.owner, (await trU(by)).removed(chat.title));
   }
 
-  /** Deletes everything stored for a channel whose binding is marked `removing`; the binding goes last. */
-  async function purgeChannel(chatId, b) {
-    await unlistChannel(b.path, chatId);
-    if (b.owner) await setOwned(b.owner, chatId, false);
-    // The bot no longer belongs to the channel, so it must not keep the channel's post texts.
-    // One delete per remembered post (up to MAX_POSTS): the KV free plan allows 1,000 deletes a
-    // day (developers.cloudflare.com/kv/platform/pricing/), which is enough because removal is rare.
-    // A channel that only moves to another glossary never comes here: its posts stay valid.
+  /** Deletes everything stored for a channel the bot left. Idempotent; `purge:<chat>` goes last. */
+  async function purgeChannel(chatId, p) {
+    await kv.del(`chan:${chatId}`); // the mark: from now on post writers delete what they wrote
+    await unlistChannel(p.path, chatId);
+    if (p.owner) await setOwned(p.owner, chatId, false);
+    await purgePosts(chatId);
+    await kv.del(`purge:${chatId}`);
+  }
+
+  /**
+   * The bot no longer belongs to the channel, so it must not keep the channel's post texts.
+   * One delete per remembered post (up to MAX_POSTS): the KV free plan allows 1,000 deletes a day
+   * (developers.cloudflare.com/kv/platform/pricing/), which is enough because removal is rare.
+   * A channel that only moves to another glossary never comes here: its posts stay valid.
+   */
+  async function purgePosts(chatId) {
     for (const p of (await kv.get(`posts:${chatId}`)) || []) await kv.del(`post:${chatId}:${p.id}`);
     await kv.del(`posts:${chatId}`);
-    await kv.del(`chan:${chatId}`);
   }
 
-  /** The channel's binding, unless there is none or the bot is leaving the channel. */
-  async function activeBinding(chatId) {
-    const b = await kv.get(`chan:${chatId}`);
-    return b && !b.removing ? b : null;
+  const bindingOf = (chatId) => kv.get(`chan:${chatId}`);
+
+  /**
+   * Every writer of post:/posts: calls this AFTER its writes. KV has no transactions, so the check
+   * cannot come first: a removal could run between the check and the writes. Re-reading the
+   * binding after writing closes that. If this read still finds the binding, it happened before
+   * the removal's mark, so the writes did too, and the removal's later read of the post list sees
+   * them and deletes them. If not, the removal has begun (or ended), so the writer deletes what it
+   * wrote, plus the post list it may have re-created.
+   */
+  async function stored(chatId, ids) {
+    if (await bindingOf(chatId)) return;
+    for (const id of ids) await kv.del(`post:${chatId}:${id}`);
+    await purgePosts(chatId);
   }
 
   // ------------------------------------------------------------ linking posts
@@ -244,19 +269,17 @@ export function createBot(deps) {
   }
 
   async function remember(chatId, id, rec, version) {
-    // Checked again right before storing: a removal may have started while the post was being
-    // edited. (KV has no transactions, so a removal that starts during these few writes can still race.)
-    if (!(await activeBinding(chatId))) return;
     await kv.put(`post:${chatId}:${id}`, rec);
     const list = ((await kv.get(`posts:${chatId}`)) || []).filter((p) => p.id !== id);
     list.push({ id, v: version });
     for (const old of list.splice(0, Math.max(0, list.length - MAX_POSTS))) await kv.del(`post:${chatId}:${old.id}`);
     await kv.put(`posts:${chatId}`, list);
+    await stored(chatId, [id]); // the bot may have been removed while this post was handled
   }
 
   /** A post arrived (new, edited by its author, or forwarded to us). */
   async function handlePost(chatId, msg, { forwarded = false } = {}) {
-    const binding = await activeBinding(chatId);
+    const binding = await bindingOf(chatId);
     if (!binding) return null;
     const text = msg.text ?? msg.caption;
     if (!text || hasButtons(msg)) return 0;
@@ -299,9 +322,10 @@ export function createBot(deps) {
     if ((await kv.get(`gver:${path}`)) === g.version) return 0;
     let done = 0, complete = true, stop = false;
     for (const chatId of chats) {
-      const binding = await activeBinding(chatId);
-      if (!binding) continue; // the bot is leaving this channel: its posts are being deleted
+      const binding = await bindingOf(chatId);
+      if (!binding) continue; // the bot left this channel: its posts are being deleted
       const list = (await kv.get(`posts:${chatId}`)) || [];
+      const written = [];
       let dirty = false;
       for (const p of [...list].reverse()) {
         if (p.v === g.version) continue;
@@ -309,13 +333,16 @@ export function createBot(deps) {
         const rec = await kv.get(`post:${chatId}:${p.id}`);
         if (rec) {
           budget.requests--;
-          try { await apply(chatId, p.id, rec, g, binding.mode,rec.applied || rec.entities); done++; await kv.put(`post:${chatId}:${p.id}`, rec); }
+          try { await apply(chatId, p.id, rec, g, binding.mode, rec.applied || rec.entities); done++; await kv.put(`post:${chatId}:${p.id}`, rec); written.push(p.id); }
           catch (e) { if (!/not found|can't be edited|MESSAGE_ID_INVALID/i.test(e.message)) { complete = false; stop = true; break; } }
         }
         p.v = g.version;
         dirty = true;
       }
-      if (dirty) await kv.put(`posts:${chatId}`, list);
+      if (dirty) {
+        await kv.put(`posts:${chatId}`, list);
+        await stored(chatId, written); // the bot may have been removed during these edits
+      }
       if (stop) break;
     }
     if (complete) await kv.put(`gver:${path}`, g.version);
@@ -365,7 +392,7 @@ export function createBot(deps) {
       const move = /^move:(-?\d+)$/.exec(q.data || "")?.[1];
       if (move) {
         await tg("answerCallbackQuery", { callback_query_id: q.id }).catch(() => {});
-        const b = await activeBinding(move), path = await kv.get(`user:${q.from.id}`);
+        const b = await bindingOf(move), path = await kv.get(`user:${q.from.id}`);
         if (q.message) await tg("editMessageReplyMarkup", { chat_id: q.message.chat.id, message_id: q.message.message_id, reply_markup: { inline_keyboard: [] } }).catch(() => {});
         if (!b || b.owner !== q.from.id || !path || b.path === path) return;
         return send([await bindChannel({ id: Number(move), title: b.title }, q.from, path)]);
@@ -384,7 +411,7 @@ export function createBot(deps) {
 
     if (msg.forward_origin?.type === "channel") {
       const chat = msg.forward_origin.chat;
-      const binding = await activeBinding(chat.id);
+      const binding = await bindingOf(chat.id);
       if (!binding || (binding.owner && binding.owner !== user.id)) return say(user.id, s.fwdUnknown);
       if (hasButtons(msg)) return say(user.id, s.fwdButtons);
       try { return say(user.id, s.fwdDone(await handlePost(chat.id, msg, { forwarded: true }))); }
@@ -422,9 +449,8 @@ export function createBot(deps) {
     if (cmd === "/language") return say(user.id, CHOOSE_LANG, { reply_markup: LANG_BUTTONS });
     if (cmd === "/status") {
       const path = await kv.get(`user:${user.id}`);
-      const ids = path ? (await kv.get(`gchans:${path}`)) || [] : [];
-      const names = await Promise.all(ids.map(async (id) => (await kv.get(`chan:${id}`))?.title || id));
-      return say(user.id, s.status(names.map((n) => `• ${n}`)));
+      const channels = path ? await status(path) : [];
+      return say(user.id, s.status(channels.map((c) => `• ${c.title}`)));
     }
     if (cmd === "/start" || cmd === "/app") {
       const rows = [...(deps.webAppUrl ? [[{ text: s.openApp, web_app: { url: deps.webAppUrl } }]] : []), ...(cmd === "/start" ? LANG_BUTTONS.inline_keyboard : [])];
@@ -445,9 +471,29 @@ export function createBot(deps) {
     return { add_to_channel_url: await addToChannelUrl(), bot_username: await deps.username() };
   }
 
+  /** Channels bound to a glossary. One the bot is being removed from is still in gchans:* briefly, without a binding. */
   async function status(path) {
     const ids = (await kv.get(`gchans:${path}`)) || [];
-    return Promise.all(ids.map(async (id) => ({ id, title: (await kv.get(`chan:${id}`))?.title || id })));
+    const found = await Promise.all(ids.map(async (id) => ({ id, b: await bindingOf(id) })));
+    return found.filter((c) => c.b).map((c) => ({ id: c.id, title: c.b.title || c.id }));
+  }
+
+  /**
+   * Finishes removals that failed and that Telegram stopped retrying. One list per run (96 a day at
+   * the 15-minute schedule; the free plan allows 1,000), within MAX_PURGE_KV_OPS KV operations.
+   * A removal that would not fit in what is left waits for the next run.
+   */
+  async function resumePurges() {
+    let ops = MAX_PURGE_KV_OPS - 1;
+    for (const key of await kv.list("purge:")) {
+      const chatId = key.slice("purge:".length);
+      const posts = (await kv.get(`posts:${chatId}`)) || [];
+      const cost = posts.length + PURGE_FIXED_OPS;
+      if (cost > ops) continue; // a smaller one may still fit
+      ops -= cost;
+      const p = await kv.get(key);
+      try { if (p) await purgeChannel(chatId, p); } catch (e) { console.error("purge", chatId, e); }
+    }
   }
 
   /**
@@ -457,6 +503,7 @@ export function createBot(deps) {
    * run stops early, at most once per run.
    */
   async function cron() {
+    await resumePurges();
     const budget = { requests: MAX_REQUESTS_PER_RUN };
     const keys = await kv.list("gchans:"); // sorted
     if (!keys.length) return;

@@ -433,11 +433,80 @@ test("bot re-added before a failed removal finished: the old records are deleted
   t.kv.del = del;
   await t.bot.handleUpdate({ my_chat_member: { chat: channel, from: user, new_chat_member: { status: "administrator", can_edit_messages: true } } });
   assert.equal(await t.kv.get("post:-1001:80"), null);
-  assert.equal((await t.kv.get("chan:-1001")).removing, undefined);
+  assert.equal(await t.kv.get("purge:-1001"), null);
+  assert.equal((await t.kv.get("chan:-1001")).path, "My-glossary-11-21");
   assert.deepEqual(await t.kv.get("gchans:My-glossary-11-21"), ["-1001"]);
   t.calls.length = 0;
   await t.bot.handleUpdate({ channel_post: { chat: channel, message_id: 81, text: "API" } });
   assert.equal(edits(t.calls).length, 1);
+});
+
+// A writer that already checked the binding, then the whole removal runs, then the writer stores.
+// Runs the removal right before the first write of `key`.
+function removeBeforeWrite(t, key) {
+  const { put } = t.kv;
+  let done = false;
+  t.kv.put = async (k, ...a) => {
+    if (k === key && !done) { done = true; await t.bot.handleUpdate({ my_chat_member: { chat: channel, from: user, new_chat_member: { status: "left" } } }); }
+    return put(k, ...a);
+  };
+  return () => done;
+}
+
+test("removing the bot: a new post whose writes land after the whole removal leaves nothing behind", async () => {
+  const t = setup();
+  await connectAndAdd(t);
+  await t.bot.handleUpdate({ channel_post: { chat: channel, message_id: 80, text: "API" } });
+  const ran = removeBeforeWrite(t, "post:-1001:81");
+  await t.bot.handleUpdate({ channel_post: { chat: channel, message_id: 81, text: "Hello API" } });
+  assert.ok(ran());
+  assert.deepEqual([...t.store.keys()].filter((k) => k.includes("-1001")), []);
+});
+
+test("removing the bot: a resync whose writes land after the whole removal leaves nothing behind", async () => {
+  const t = setup();
+  await connectAndAdd(t);
+  await t.bot.handleUpdate({ channel_post: { chat: channel, message_id: 80, text: "API" } });
+  t.setTerms([{ term: "API", aliases: [], path: "API-2" }]);
+  const ran = removeBeforeWrite(t, "post:-1001:80");
+  await t.bot.resync("My-glossary-11-21");
+  assert.ok(ran());
+  assert.deepEqual([...t.store.keys()].filter((k) => k.includes("-1001")), []);
+});
+
+test("a removal that failed and was never retried is finished by the cron", async () => {
+  const t = setup();
+  await connectAndAdd(t);
+  for (const id of [80, 81]) await t.bot.handleUpdate({ channel_post: { chat: channel, message_id: id, text: "API" } });
+  const { del } = t.kv;
+  t.kv.del = async (k) => { if (k.startsWith("post")) throw new Error("KV unavailable"); return del(k); };
+  await assert.rejects(t.bot.handleUpdate({ my_chat_member: { chat: channel, from: user, new_chat_member: { status: "left" } } }));
+  t.kv.del = del;
+  // Telegram gives up; the channel is no longer listed in gchans:*, so only the purge record finds it.
+  const { list } = t.kv;
+  const lists = [];
+  t.kv.list = async (p) => { lists.push(p); return list(p); };
+  await t.bot.cron();
+  assert.equal(lists.filter((p) => p === "purge:").length, 1);
+  assert.deepEqual([...t.store.keys()].filter((k) => k.includes("-1001")), []);
+  await t.bot.cron(); // nothing left to do
+});
+
+test("/status and the status API do not list a channel whose removal is under way", async () => {
+  const t = setup();
+  await connectAndAdd(t);
+  const { put, del } = t.kv;
+  const failGchans = (fn) => async (k, ...a) => { if (k.startsWith("gchans:")) throw new Error("KV unavailable"); return fn(k, ...a); };
+  t.kv.put = failGchans(put);
+  t.kv.del = failGchans(del);
+  await assert.rejects(t.bot.handleUpdate({ my_chat_member: { chat: channel, from: user, new_chat_member: { status: "left" } } }));
+  t.kv.put = put;
+  t.kv.del = del;
+  assert.deepEqual(await t.kv.get("gchans:My-glossary-11-21"), ["-1001"]); // still listed: the removal stopped before unlisting
+  assert.deepEqual(await t.bot.status("My-glossary-11-21"), []);
+  t.calls.length = 0;
+  await t.bot.handleUpdate({ message: { chat: { id: 7, type: "private" }, from: user, text: "/status" } });
+  assert.match(t.calls.at(-1).params.text, /No connected channels/);
 });
 
 test("removing the bot: a channel post already in flight does not store its text after the removal", async () => {
