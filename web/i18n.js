@@ -19,6 +19,7 @@ export const STRINGS = {
       "מפרסמים כרגיל. הבוט מוסיף את הקישורים תוך שניות, ומעדכן פוסטים קודמים כשמונח משתנה.",
     ],
     howNoChannel: "בלי ערוץ? לשונית „פוסט” מעתיקה את הפוסט עם הקישורים.",
+    howGuide: "מדריך מלא עם תמונות",
 
     // shell
     tabTerms: "מונחים",
@@ -150,6 +151,7 @@ export const STRINGS = {
       "Post as usual. The bot adds the links within seconds, and updates earlier posts when a term changes.",
     ],
     howNoChannel: "No channel? The Post tab copies your post with its links.",
+    howGuide: "Full guide with pictures",
 
     tabTerms: "Terms",
     tabPost: "Post",

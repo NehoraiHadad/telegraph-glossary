@@ -161,6 +161,11 @@ function ready(g) {
   refreshChannels();
 }
 
+const GUIDE_URL = {
+  he: "https://github.com/NehoraiHadad/telegraph-glossary/blob/main/docs/GUIDE.he.md",
+  en: "https://github.com/NehoraiHadad/telegraph-glossary/blob/main/docs/GUIDE.md",
+};
+
 // ---------------------------------------------------------------- welcome
 function renderWelcome() {
   const [a, term1, b, term2, c] = t("heroDemo");
@@ -194,7 +199,8 @@ function renderWelcome() {
     h("section", { class: "how", "aria-labelledby": "how-title" },
       h("h2", { id: "how-title" }, t("howTitle")),
       h("ol", {}, ...t("how").map((s) => h("li", {}, s))),
-      h("p", { class: "fine" }, t("howNoChannel"))),
+      h("p", { class: "fine" }, t("howNoChannel")),
+      h("p", { class: "fine" }, h("a", { href: GUIDE_URL[state.lang] || GUIDE_URL.en, target: "_blank", rel: "noopener" }, t("howGuide")))),
   ));
   $app.prepend(h("div", { class: "welcome-top" }, langSwitch(renderWelcome)));
   name.focus();

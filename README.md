@@ -18,6 +18,8 @@ You build a glossary once. Each term becomes a short [Telegraph](https://telegra
 
 ## For users
 
+Step by step, with pictures: [Getting started](docs/GUIDE.md) · [מדריך בעברית](docs/GUIDE.he.md)
+
 1. **Create a glossary.** Give it a name. No sign-up.
 2. **Add terms.** Each term has a short explanation, plus *other forms* such as the plural, the English name or an acronym.
    Hebrew prefixes (בפייתון, ל-API) are matched automatically.
