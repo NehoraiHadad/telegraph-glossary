@@ -120,6 +120,11 @@ def check_index_fits(terms: list[Entry]) -> None:
         )
 
 
+def names(entry: "Entry") -> list[str]:
+    """The lowercased term and aliases: the names that must be unique across a glossary."""
+    return [entry.term.lower(), *(x.lower() for x in entry.aliases)]
+
+
 def clean_aliases(aliases: list[str], term: str) -> list[str]:
     seen = {term.strip().lower()}
     out = []
@@ -298,7 +303,7 @@ class Glossary:
             [t for t in self.terms if t.path not in replaced]
             + [p["entry"] if p["original"] else Entry(p["entry"].term, projected_path(p["entry"].term), p["entry"].aliases) for p in plans]
         )
-        saved: list[Entry] = []
+        saved: list[dict[str, Any]] = []
         for p in plans:
             entry = p["entry"]
             try:
@@ -306,7 +311,7 @@ class Glossary:
                     self._call("editPage", {"path": entry.path, "title": entry.term, **self._meta(), "content": p["content"]})
                 else:
                     entry.path = self._call("createPage", {"title": entry.term, **self._meta(), "content": p["content"]})["path"]
-                saved.append(entry)
+                saved.append(p)
                 result = {"term": entry.term, "status": "updated" if p["original"] else "added", "url": entry.url}
             except TelegraphError as e:
                 result = {"term": entry.term, "status": "error", "error": str(e)}
@@ -314,9 +319,21 @@ class Glossary:
             results[last] = result
             for pos in earlier:
                 results[pos] = {**result, "note": "replaced by a later item for the same term"}
+        # Planning freed names from entries that were going to change. If such a change failed, its
+        # entry keeps its old names, so a saved item that took one of them can't be listed.
+        while True:
+            kept = {k: t for t in self.terms if t.path not in {p["entry"].path for p in saved} for k in names(t)}
+            bad = next((p for p in saved if any(k in kept for k in names(p["entry"]))), None)
+            if not bad:
+                break
+            saved.remove(bad)
+            clash = next(kept[k] for k in names(bad["entry"]) if k in kept)
+            for pos in bad["positions"]:
+                results[pos] = {"term": bad["entry"].term, "status": "error", "error": f'not listed: "{clash.term}" still uses one of its names, because its update failed'}
         if saved:
-            paths = {e.path for e in saved}
-            self.update_index(lambda terms: [t for t in terms if t.path not in paths] + saved)
+            entries = [p["entry"] for p in saved]
+            paths = {e.path for e in entries}
+            self.update_index(lambda terms: [t for t in terms if t.path not in paths] + entries)
             self._changed()
         return results
 
@@ -374,9 +391,12 @@ class Glossary:
             return False
         # Telegraph pages cannot be deleted: drop it from the index, then blank the page. Index
         # first, so a failed index write (network, concurrent edit) leaves the term intact. If the
-        # blanking fails after that, an unlisted page with the old definition is left: harmless,
-        # since the index no longer lists or links it.
+        # blanking fails, the term is listed again, so the removal can simply be retried.
         self.update_index(lambda terms: [t for t in terms if t.path != entry.path])
-        self._call("editPage", {"path": entry.path, "title": entry.term, **self._meta(), "content": [{"tag": "p", "children": ["—"]}]})
+        try:
+            self._call("editPage", {"path": entry.path, "title": entry.term, **self._meta(), "content": [{"tag": "p", "children": ["—"]}]})
+        except Exception:
+            self.update_index(lambda terms: [t for t in terms if t.path != entry.path] + [entry])
+            raise
         self._changed()
         return True

@@ -199,10 +199,14 @@ export class Glossary {
     if (!t) return false;
     // Telegraph pages cannot be deleted: drop it from the index, then blank the page. Index first,
     // so a failed index write (network, concurrent edit) leaves the term intact. If the blanking
-    // fails after that, an unlisted page with the old definition is left: harmless, since the
-    // index no longer lists or links it.
+    // fails, the term is listed again, so the removal can simply be retried.
     await this.updateIndex((terms) => terms.filter((x) => x.path !== t.path));
-    await this.api("editPage", { path: t.path, title: t.term, ...this.pageMeta(), content: [{ tag: "p", children: ["—"] }] });
+    try {
+      await this.api("editPage", { path: t.path, title: t.term, ...this.pageMeta(), content: [{ tag: "p", children: ["—"] }] });
+    } catch (e) {
+      await this.updateIndex((terms) => [...terms.filter((x) => x.path !== t.path), t]);
+      throw e;
+    }
     return true;
   }
 

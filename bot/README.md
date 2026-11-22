@@ -70,7 +70,7 @@ Only `BOT_TOKEN` is needed: the webhook secret is derived from it.
 * Bots can't read channel history, so posts from before the bot joined are updated only when forwarded.
 * Free plan: about 1,000 KV writes a day (about 2 per new post) and 50 outgoing requests per
   invocation. So a glossary change updates about 40 posts per run and the rest on the next run,
-  and each 15-minute run checks up to 45 glossaries for edits made elsewhere, taking turns.
+  and each 15-minute run checks up to 45 glossaries for edits made elsewhere; the next run goes on from where it stopped.
   The $5 Workers plan lifts both limits.
 
 ## Tests

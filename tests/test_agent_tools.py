@@ -26,6 +26,7 @@ class MemTelegraph(Glossary):
         self.index_writes = 0
         self.changed = 0
         self.fail_index_write = False
+        self.fail_page = None  # path whose editPage fails
 
     def _call(self, method, params=None, auth=True):
         p = params or {}
@@ -33,6 +34,8 @@ class MemTelegraph(Glossary):
             return self.pages[p["path"]]
         if method in ("createPage", "editPage") and sent_bytes(p["content"]) > LIMIT:
             raise TelegraphError("CONTENT_TOO_BIG")
+        if method == "editPage" and p["path"] == self.fail_page:
+            raise TelegraphError("network down")
         if method == "editPage" and p["path"] == "Idx" and self.fail_index_write:
             raise TelegraphError("network down")
         if method == "createPage":
@@ -155,3 +158,25 @@ def test_same_term_twice_in_one_call_is_listed_once_last_wins():
     assert g.pages[docker.path]["content"] == [{"tag": "p", "children": ["two"]}]
     assert g.pages["API-1"]["content"] == [{"tag": "p", "children": ["second"]}]
     assert len(g.pages) == 4  # index, API, one Docker page, dk
+
+
+def test_remove_term_relists_the_term_when_blanking_fails():
+    g = MemTelegraph([Entry("API", "API-1")])
+    g.fail_page = "API-1"
+    with pytest.raises(TelegraphError):
+        g.remove_term("API")
+    assert [t.term for t in g.refresh()] == ["API"]  # still listed, so the removal can be retried
+    g.fail_page = None
+    assert g.remove_term("API") and g.refresh() == []
+
+
+def test_save_terms_does_not_list_an_item_whose_name_a_failed_update_still_uses():
+    g = MemTelegraph([Entry("API", "API-1", ["REST"])])
+    g.fail_page = "API-1"  # the update that frees "REST" fails
+    r = g.save_terms([
+        {"term": "API", "definition": "x", "aliases": []},
+        {"term": "REST", "definition": "y"},
+    ])
+    assert [x["status"] for x in r] == ["error", "error"]
+    terms = g.refresh()
+    assert [(t.term, t.aliases) for t in terms] == [("API", ["REST"])]

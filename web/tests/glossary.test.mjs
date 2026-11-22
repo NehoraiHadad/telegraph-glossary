@@ -9,7 +9,7 @@ const sentBytes = (nodes) => new TextEncoder().encode(JSON.stringify(nodes)).len
 function memTelegraph(terms) {
   const pages = { Idx: { title: "G", content: buildIndex(terms) } };
   for (const t of terms) pages[t.path] = { title: t.term, content: [{ tag: "p", children: [`about ${t.term}`] }] };
-  const state = { pages, failIndexWrite: false, indexWrites: 0 };
+  const state = { pages, failIndexWrite: false, failPage: null, indexWrites: 0 };
   const ok = (result) => ({ json: async () => ({ ok: true, result }) });
   const fail = (error) => ({ json: async () => ({ ok: false, error }) });
   const fetchImpl = async (url, { body }) => {
@@ -24,6 +24,7 @@ function memTelegraph(terms) {
       return ok({ path });
     }
     if (method === "editPage") {
+      if (p.path === state.failPage) return fail("network down");
       if (p.path === "Idx") {
         if (state.failIndexWrite) return fail("network down");
         state.indexWrites++;
@@ -65,4 +66,14 @@ test("adding to a full glossary fails before any page is written", async () => {
   // an update that fits still works
   await g.saveTerm({ term: "Term 0000", aliases: ["x".repeat(40)], definition: "changed" }, "Term 0000");
   assert.deepEqual(state.pages["Term-0000-11-22"].content, [{ tag: "p", children: ["changed"] }]);
+});
+
+test("removing a term lists it again when blanking its page fails", async () => {
+  const { g, state } = memTelegraph([{ term: "API", aliases: [], path: "API-1" }]);
+  state.failPage = "API-1";
+  await assert.rejects(g.removeTerm("API"), /network down/);
+  assert.deepEqual(parseIndex(state.pages.Idx.content).map((t) => t.term), ["API"]);
+  state.failPage = null;
+  assert.equal(await g.removeTerm("API"), true);
+  assert.deepEqual(parseIndex(state.pages.Idx.content), []);
 });
