@@ -9,6 +9,13 @@ You build a glossary once. Each term becomes a short [Telegraph](https://telegra
 
 **Web app:** https://nehoraihadad.github.io/telegraph-glossary/
 
+<p>
+  <img src="docs/screenshots/welcome.png" width="200" alt="Welcome screen with how it works">
+  <img src="docs/screenshots/terms.png" width="200" alt="Terms tab">
+  <img src="docs/screenshots/post.png" width="200" alt="Post tab: terms that will be linked">
+  <img src="docs/screenshots/channel.png" width="200" alt="Channel tab: the bot adds links to your posts">
+</p>
+
 ## For users
 
 1. **Create a glossary.** Give it a name. No sign-up.

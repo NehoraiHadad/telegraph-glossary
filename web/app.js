@@ -191,6 +191,10 @@ function renderWelcome() {
     form,
     h("p", { class: "fine" }, t("free")),
     h("div", { class: "alt" }, h("button", { class: "textlink", onclick: () => { keyRow.hidden = !keyRow.hidden; keyIn.focus(); } }, t("haveKey")), keyRow),
+    h("section", { class: "how", "aria-labelledby": "how-title" },
+      h("h2", { id: "how-title" }, t("howTitle")),
+      h("ol", {}, ...t("how").map((s) => h("li", {}, s))),
+      h("p", { class: "fine" }, t("howNoChannel"))),
   ));
   $app.prepend(h("div", { class: "welcome-top" }, langSwitch(renderWelcome)));
   name.focus();

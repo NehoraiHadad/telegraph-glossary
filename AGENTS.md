@@ -66,6 +66,7 @@ post IDs it may re-edit. KV key prefixes are in `bot/src/handler.js`.
 node --test web/tests/*.mjs bot/tests/*.mjs   # JS units, shared spec, bot flows (mocked Telegram + KV)
 pip install -e . pytest && pytest             # Python, same spec; agent tools use an in-memory Telegraph
 e2e/run.sh                                    # site + local Worker + fake Telegram in a real browser
+node e2e/screenshots.cjs                      # README screenshots (fake Telegraph and bot)
 ```
 
 CI (`.github/workflows/tests.yml`) runs the first two on every push. `e2e/run.sh` uses the real

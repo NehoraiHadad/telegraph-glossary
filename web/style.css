@@ -107,6 +107,9 @@ pre.cmd {
 .create { display: grid; gap: 10px; max-width: 460px; }
 .create .row { flex-wrap: nowrap; }
 .welcome .fine { color: var(--muted); font-size: .88rem; margin-top: 12px; }
+.welcome .how { margin-top: 48px; padding-top: 24px; border-top: 1px solid var(--line); max-width: 34em; }
+.welcome .how h2 { font-size: 1.05rem; margin: 0 0 12px; }
+.welcome .how ol { margin: 0; padding-inline-start: 1.4em; display: grid; gap: 8px; }
 .welcome .alt { margin-top: 28px; display: grid; gap: 10px; max-width: 460px; justify-items: start; }
 .welcome .alt .row { width: 100%; flex-wrap: nowrap; }
 .welcome-top { max-width: 640px; margin: 0 auto; padding: 16px 16px 0; display: flex; justify-content: flex-end; }
