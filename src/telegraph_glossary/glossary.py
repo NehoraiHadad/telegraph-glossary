@@ -209,6 +209,71 @@ class Glossary:
         self._changed()
         return entry
 
+    def save_terms(self, items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Add or update many terms with one index write. Each item: term, definition, aliases?.
+        An existing term (by name or alias) is updated. Items that fail validation are reported and
+        skipped; the rest are saved."""
+        self.refresh()
+        taken = {k: t for t in self.terms for k in [t.term.lower(), *(a.lower() for a in t.aliases)]}
+        results: list[dict[str, Any]] = []
+        saved: list[Entry] = []
+        for item in items:
+            term = re.sub(r"\s+", " ", str(item.get("term") or "")).strip()
+            try:
+                if not term:
+                    raise ValueError("empty term")
+                if re.search(r"[,·]", term):
+                    raise ValueError("term cannot contain ',' or '·'")
+                content = markdown_to_nodes(str(item.get("definition") or ""))
+                if not content:
+                    raise ValueError("empty definition")
+                existing = taken.get(term.lower())
+                if existing and existing.term.lower() != term.lower():
+                    raise ValueError(f'"{term}" is already an alias of "{existing.term}"')
+                # omitted aliases keep the existing ones; [] clears them
+                aliases = clean_aliases(item["aliases"] if item.get("aliases") is not None else (existing.aliases if existing else []), term)
+                clash = next((taken[k.lower()] for k in aliases if k.lower() in taken and taken[k.lower()] is not existing), None)
+                if clash:
+                    raise ValueError(f'"{clash.term}" already uses one of these aliases')
+                if existing:
+                    path = existing.path
+                    self._call("editPage", {"path": path, "title": term, **self._meta(), "content": content})
+                else:
+                    path = self._call("createPage", {"title": term, **self._meta(), "content": content})["path"]
+                entry = Entry(term, path, aliases)
+                for k in [term, *aliases]:
+                    taken[k.lower()] = entry
+                saved.append(entry)
+                results.append({"term": term, "status": "updated" if existing else "added", "url": entry.url})
+            except (ValueError, TelegraphError) as e:
+                results.append({"term": term, "status": "error", "error": str(e)})
+        if saved:
+            paths = {e.path for e in saved}
+            self.update_index(lambda terms: [t for t in terms if t.path not in paths] + saved)
+            self._changed()
+        return results
+
+    def rename(self, title: str) -> None:
+        title = title.strip()
+        if not title:
+            raise ValueError("empty title")
+        self.refresh()  # don't write back a stale term list
+        self.title = title
+        self.save_index()
+
+    def auth_url(self) -> str:
+        """One-time link that signs a browser in to telegra.ph as this glossary's account."""
+        return self._call("getAccountInfo", {"fields": ["auth_url"]})["auth_url"]
+
+    def export(self) -> list[dict[str, Any]]:
+        """All terms with their definitions (Markdown)."""
+        self.refresh()
+        out = []
+        for t in self.terms:
+            page = self._call("getPage", {"path": t.path, "return_content": True}, auth=False)
+            out.append({"term": t.term, "aliases": t.aliases, "url": t.url, "definition": nodes_to_markdown(page.get("content", []))})
+        return out
+
     def update_index(self, apply, attempts: int = 4) -> None:
         """Change the index without losing a concurrent edit (web app, another agent).
 

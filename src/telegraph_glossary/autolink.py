@@ -54,6 +54,11 @@ def connect(index_path: str) -> dict:
     return _req("POST", "/api/connect", json={"index_path": index_path})
 
 
+def relink(index_path: str) -> None:
+    """Ask the bot to re-apply the glossary to the remembered posts of every connected channel now."""
+    _req("POST", "/api/changed", json={"index_path": index_path})
+
+
 def notify_changed(index_path: Optional[str]) -> None:
     """Best effort: lets the bot update existing channel posts right away."""
     if not index_path or not bot_api():

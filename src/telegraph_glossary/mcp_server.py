@@ -34,6 +34,7 @@ Good habits:
   glossary and offer to add it.
 - Definitions: 1-3 plain sentences in the post's language. Markdown is allowed.
   Add aliases for other forms readers will write (plural, English/Hebrew name, acronym).
+- Many terms at once (importing a list, filling gaps from a post): use add_terms.
 - Ask before removing terms or sending messages. Never invent glossary URLs.
 """
 
@@ -142,6 +143,57 @@ def update_term(
 def remove_term(term: str) -> dict:
     """Remove a term from the glossary (its page is blanked; Telegraph cannot delete pages)."""
     return {"removed": _g().remove_term(term)}
+
+
+@tool
+def add_terms(terms: list[dict]) -> list[dict]:
+    """Add or update many terms in one call (much faster than add_term in a loop).
+    Each item: {"term": str, "definition": str (Markdown), "aliases": [str] (optional)}.
+    An item whose term already exists updates it (omit "aliases" to keep its current ones). Returns a status per item: added, updated or error."""
+    return _g().save_terms(terms)
+
+
+@tool
+def rename_glossary(title: str) -> dict:
+    """Rename the glossary (the title of its public index page)."""
+    g = _g()
+    g.rename(title)
+    return {"title": g.title, "index_url": g.index_url}
+
+
+@tool
+def export_glossary(format: str = "markdown") -> dict | list[dict]:
+    """Every term with its full definition, for backup or review.
+    format: "markdown" (one document) or "json" (a list of {term, aliases, url, definition})."""
+    g = _g()
+    items = g.export()
+    if format == "json":
+        return items
+    if format != "markdown":
+        raise ValueError('format must be "markdown" or "json"')
+    parts = [f"# {g.title}", ""]
+    for t in items:
+        parts += [f"## {t['term']}", *([f"*Also: {', '.join(t['aliases'])}*"] if t["aliases"] else []), "", t["definition"], f"<{t['url']}>", ""]
+    return {"markdown": "\n".join(parts), "term_count": len(items)}
+
+
+@tool
+def edit_on_telegraph() -> dict:
+    """A one-time link that signs the user's browser in to telegra.ph as the glossary's account,
+    so they can edit pages there directly. The link expires within minutes. Give it only to the user."""
+    return {"url": _g().auth_url(), "note": "One-time sign-in link for telegra.ph. It expires within minutes; don't share it."}
+
+
+@tool
+def relink_channel() -> dict:
+    """Make the auto-link bot re-apply the glossary to the remembered posts of every connected channel
+    now, instead of on its next 15-minute run. Adding, updating or removing terms already does this."""
+    g = _g()
+    channels = autolink.status(g.index_path)
+    if not channels:
+        raise RuntimeError("No channel is connected to this glossary. Use connect_channel first.")
+    autolink.relink(g.index_path)
+    return {"started": True, "channels": [c["title"] for c in channels]}
 
 
 @tool
