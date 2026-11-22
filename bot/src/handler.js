@@ -235,25 +235,38 @@ export function createBot(deps) {
     }
   }
 
-  /** Glossary changed: re-apply to remembered posts (newest first, bounded per run). */
+  /**
+   * Glossary changed: re-apply to remembered posts (newest first, bounded per run).
+   * Anyone may trigger this (/api/changed carries no authority), so it only acts on public state
+   * and writes to KV only what actually changed: an unchanged glossary or a glossary without
+   * channels costs reads only.
+   */
   async function resync(path, budget = { edits: MAX_EDITS_PER_RUN }) {
+    const chats = (await kv.get(`gchans:${path}`)) || [];
+    if (!chats.length) return 0;
     const g = await glossary(path, true);
     if ((await kv.get(`gver:${path}`)) === g.version) return 0;
-    let done = 0, complete = true;
-    for (const chatId of (await kv.get(`gchans:${path}`)) || []) {
+    // The budget counts Telegram attempts, failed ones included: it bounds the run's subrequests.
+    // An unexpected (likely transient) error ends the run; the rest waits for the next one.
+    let done = 0, complete = true, stop = false;
+    for (const chatId of chats) {
       const binding = await kv.get(`chan:${chatId}`);
       const list = (await kv.get(`posts:${chatId}`)) || [];
+      let dirty = false;
       for (const p of [...list].reverse()) {
         if (p.v === g.version) continue;
-        if (budget.edits <= 0) { complete = false; break; }
+        if (budget.edits <= 0) { complete = false; stop = true; break; }
         const rec = await kv.get(`post:${chatId}:${p.id}`);
         if (rec) {
-          try { await apply(chatId, p.id, rec, g, binding?.mode, rec.applied || rec.entities); budget.edits--; done++; await kv.put(`post:${chatId}:${p.id}`, rec); }
-          catch (e) { if (!/not found|can't be edited|MESSAGE_ID_INVALID/i.test(e.message)) { complete = false; break; } }
+          budget.edits--;
+          try { await apply(chatId, p.id, rec, g, binding?.mode, rec.applied || rec.entities); done++; await kv.put(`post:${chatId}:${p.id}`, rec); }
+          catch (e) { if (!/not found|can't be edited|MESSAGE_ID_INVALID/i.test(e.message)) { complete = false; stop = true; break; } }
         }
         p.v = g.version;
+        dirty = true;
       }
-      await kv.put(`posts:${chatId}`, list);
+      if (dirty) await kv.put(`posts:${chatId}`, list);
+      if (stop) break;
     }
     if (complete) await kv.put(`gver:${path}`, g.version);
     return done;
