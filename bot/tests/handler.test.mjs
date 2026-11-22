@@ -12,14 +12,19 @@ function setup() {
     list: async (p) => [...store.keys()].filter((k) => k.startsWith(p)),
   };
   const calls = [];
+  let fail = false;
   let terms = [{ term: "API", aliases: [], path: "API-1" }, { term: "פייתון", aliases: ["Python"], path: "Py-1" }];
   const bot = createBot({
     kv,
     username: async () => "GlossBot",
-    tg: async (method, params) => { calls.push({ method, params }); return { message_id: 1 }; },
+    tg: async (method, params) => {
+      calls.push({ method, params });
+      if (fail && method.startsWith("edit")) throw new Error("Bad Gateway");
+      return { message_id: 1 };
+    },
     getPage: async () => ({ title: "My glossary", content: buildIndex(terms, "My glossary") }),
   });
-  return { bot, calls, kv, store, setTerms: (t) => { terms = t; } };
+  return { bot, calls, kv, store, setTerms: (t) => { terms = t; }, failEdits: (on) => { fail = on; } };
 }
 
 const user = { id: 7, language_code: "en", first_name: "Dana" };
@@ -258,4 +263,55 @@ test("removing the bot from a channel forgets it for move offers", async () => {
   assert.deepEqual(await t.kv.get("uchans:7"), ["-1001"]);
   await t.bot.handleUpdate({ my_chat_member: { chat: channel, from: user, new_chat_member: { status: "left" } } });
   assert.equal(await t.kv.get("uchans:7"), null);
+});
+
+test("resync writes KV only on real change (anyone can trigger it through /api/changed)", async () => {
+  const t = setup();
+  const writes = [];
+  const put = t.kv.put;
+  t.kv.put = async (k, v) => { writes.push(k); return put(k, v); };
+  // A page no channel uses: nothing to do and nothing written, whatever page is named.
+  assert.equal(await t.bot.resync("Some-other-page-01-01"), 0);
+  assert.deepEqual(writes, []);
+  await connectAndAdd(t);
+  await t.bot.handleUpdate({ channel_post: { chat: channel, message_id: 70, text: "API notes" } });
+  await t.bot.resync("My-glossary-11-21");
+  writes.length = 0;
+  // Unchanged glossary: reads only.
+  assert.equal(await t.bot.resync("My-glossary-11-21"), 0);
+  assert.deepEqual(writes, []);
+  // The glossary changed but the edit keeps failing (e.g. Telegram is down): retried on every
+  // trigger, and nothing is rewritten until something actually changes.
+  t.setTerms([{ term: "notes", aliases: [], path: "Notes-1" }]);
+  t.failEdits(true);
+  await t.bot.resync("My-glossary-11-21");
+  await t.bot.resync("My-glossary-11-21");
+  assert.deepEqual(writes, []);
+  t.failEdits(false);
+  assert.equal(await t.bot.resync("My-glossary-11-21"), 1);
+  assert.deepEqual(writes.sort(), ["gver:My-glossary-11-21", "post:-1001:70", "posts:-1001"]);
+});
+
+test("resync budget bounds Telegram attempts, failed ones included", async () => {
+  const t = setup();
+  await connectAndAdd(t);
+  const other = { id: -1002, type: "channel", title: "Second" };
+  await t.bot.handleUpdate({ my_chat_member: { chat: other, from: user, new_chat_member: { status: "administrator", can_edit_messages: true } } });
+  for (let i = 0; i < 5; i++) {
+    await t.bot.handleUpdate({ channel_post: { chat: channel, message_id: 100 + i, text: "API" } });
+    await t.bot.handleUpdate({ channel_post: { chat: other, message_id: 200 + i, text: "API" } });
+  }
+  await t.bot.resync("My-glossary-11-21");
+  t.setTerms([{ term: "API", aliases: [], path: "API-2" }]);
+  t.calls.length = 0;
+  t.failEdits(true); // transient failure: one attempt, then the run stops (other channel included)
+  await t.bot.resync("My-glossary-11-21", { edits: 3 });
+  assert.equal(edits(t.calls).length, 1);
+  t.failEdits(false);
+  t.calls.length = 0;
+  await t.bot.resync("My-glossary-11-21", { edits: 3 });
+  assert.equal(edits(t.calls).length, 3);
+  t.calls.length = 0;
+  assert.equal(await t.bot.resync("My-glossary-11-21"), 7); // the rest, then done
+  assert.equal(await t.bot.resync("My-glossary-11-21"), 0);
 });
