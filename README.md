@@ -75,7 +75,6 @@ src/       Python package: CLI + MCP server
 spec/      linker cases both implementations must pass
 e2e/       full local run: site + Worker + fake Telegram, in a real browser
 docs/      FORMAT.md, how a glossary is stored on Telegraph
-legacy/    the previous Streamlit app
 ```
 
 ```bash
