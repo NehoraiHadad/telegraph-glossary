@@ -43,6 +43,10 @@ Then ask, for example: *"Which terms from this post are missing from my glossary
 |---|---|
 | `glossary_info` | title, public page, term count, whether a channel is auto-linked |
 | `list_terms` `get_term` `add_term` `update_term` `remove_term` | manage terms (definitions in Markdown) |
+| `add_terms` | add or update many terms in one call |
+| `rename_glossary` `export_glossary` | rename; all terms with definitions as Markdown or JSON |
+| `edit_on_telegraph` | one-time link that signs the browser in to telegra.ph |
+| `relink_channel` | re-apply the glossary to the channel's posts now |
 | `link_text` | the post as Telegram HTML with links, plus the terms found |
 | `connect_channel` `channel_status` | connect a channel to the auto-link bot |
 | `send_to_telegram` | send through your own bot (`TELEGRAM_BOT_TOKEN`) |

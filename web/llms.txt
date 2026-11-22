@@ -21,6 +21,10 @@ No key yet? `uvx --from git+https://github.com/NehoraiHadad/telegraph-glossary t
 
 - glossary_info: title, public page, term count, whether a channel is auto-linked
 - list_terms, get_term, add_term, update_term, remove_term
+- add_terms: add or update many terms in one call
+- rename_glossary, export_glossary (Markdown or JSON backup)
+- edit_on_telegraph: one-time telegra.ph sign-in link for the user
+- relink_channel: re-apply the glossary to connected channels' posts now
 - link_text: returns the post as Telegram HTML with links, plus the terms found
 - send_to_telegram: only with the user's own bot token (TELEGRAM_BOT_TOKEN)
 - connect_channel, channel_status: the auto-link bot
